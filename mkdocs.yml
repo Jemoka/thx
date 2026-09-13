@@ -1,0 +1,119 @@
+site_name: theseus
+repo_url: https://github.com/Jemoka/thx
+repo_name: Jemoka/thx
+site_description: Train, evaluate, and dispatch language model jobs with minimal boilerplate.
+site_dir: site
+docs_dir: docs
+watch:
+  - theseus
+
+theme:
+  variant: classic
+  font: false
+  custom_dir: docs/overrides
+  favicon: assets/empty-favicon.svg
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+  features:
+    - navigation.sections
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+extra:
+  generator: false
+
+extra_css:
+  - https://fonts.bunny.net/css?family=gabarito:400,500,600,700&display=swap
+  - assets/theseus.css
+
+plugins:
+  - search
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - .
+          options:
+            show_root_heading: true
+            show_root_toc_entry: false
+            show_root_full_path: false
+            show_source: false
+            show_signature_annotations: true
+            merge_init_into_class: true
+            members_order: source
+            docstring_style: google
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - pymdownx.keys
+
+nav:
+  - Home: index.md
+  - Getting Started: quickstart.md
+  - Tutorial:
+    - Overview: Tutorials/index.md
+    - Local training: Tutorials/running.md
+    - Local analysis: Tutorials/inspecting-runs.md
+    - Remote training: Tutorials/remote.md
+    - Your own experiments: Tutorials/adding.md
+    - What's Next: Tutorials/next.md
+  - How-to Guides:
+    - Disclosing Code: How-to/disclosure.md
+    - Analysis System: How-to/analysis.md
+    - Evaluation System: How-to/evaluation.md
+    - Remote Configuration:
+      - Overview: How-to/remote-configuration/index.md
+      - Provider Configuration: How-to/remote-configuration/providers.md
+      - JuiceFS Integration: How-to/remote-configuration/juicefs.md
+    - Adding Things:
+      - Overview: How-to/adding/index.md
+      - Adding Components:
+        - Overview: How-to/adding/components/index.md
+        - Model: How-to/adding/components/model.md
+        - Experiment: How-to/adding/components/experiment.md
+        - Dataset: How-to/adding/components/dataset.md
+        - Evaluation: How-to/adding/components/evaluation.md
+        - Analysis Job: How-to/adding/components/analysis-job.md
+      - Extending Components:
+        - Overview: How-to/adding/extending/index.md
+        - Trainer: How-to/adding/extending/trainer.md
+        - Module: How-to/adding/extending/module.md
+        - GPT: How-to/adding/extending/gpt.md
+        - Transformer Block: How-to/adding/extending/block.md
+        - Attention: How-to/adding/extending/attention.md
+        - MLP: How-to/adding/extending/mlp.md
+        - Mixture of Experts: How-to/adding/extending/moe.md
+  - Design:
+    - Overview: Design/index.md
+    - Sharp Edges: Design/sharp.md
+    - Experiment DAG and Storage: Design/dag.md
+    - Available Chips: Design/chips.md
+    - Sharding Design: Design/sharding.md
+    - Config System: Design/config.md
+    - Analysis and Plotting: Design/plot.md
+  - Reference: Reference/
+  - About: about.md

@@ -1,0 +1,46 @@
+# Copy to ~/.theseus.yaml, or pass --dispatch-config PATH.
+# Edit paths, SSH aliases, partitions, and capacity for your infrastructure.
+priority: [workstation, hpc-login, batch]
+
+gres_mapping:
+  h100: h100_80gb
+
+clusters:
+  local:
+    root: /data/theseus
+    work: /tmp/theseus
+  hpc:
+    root: /shared/theseus
+    work: /shared/theseus-work
+    log: /shared/theseus-logs
+  k8s:
+    root: /workspace/theseus
+    work: /workspace/work
+
+hosts:
+  workstation:
+    type: plain
+    ssh: gpu-workstation
+    cluster: local
+    chips: {h100: 4}
+    uv_groups: [cuda13]
+  hpc-login:
+    type: slurm
+    ssh: hpc
+    cluster: hpc
+    partitions: [gpu]
+    cpu_partitions: [cpu]
+    account: myproject
+    uv_groups: [cuda13]
+  batch:
+    type: volcano
+    cluster: k8s
+    namespace: training
+    queue: training
+    image: my-training-image:latest
+    pvc_name: shared-workspace
+    pvc_mount_path: /workspace
+    chips: {h100: 8}
+    gpus_per_node: 8
+    num_nodes: 2
+    uv_groups: [cuda13]

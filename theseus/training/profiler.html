@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Theseus profiler</title>
+<style>
+body { max-width: 48rem; margin: 3rem auto; padding: 0 1rem; background: #f7f7f7; color: #2f3338; font: 18px/1.5 Georgia, serif; }
+a { color: #24768a; }
+button { font: inherit; padding: .3rem .6rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }
+</style>
+<h1>spedcon</h1>
+% if node is not None:
+<p>{{node.name}}, seq {{node.seq}}</p>
+% end
+<p>{{host}}, process {{process}}</p>
+<form id="capture">
+  <button>Capture next training step</button>
+</form>
+<pre id="status" role="status" aria-live="polite"></pre>
+<div id="captures"></div>
+<p>For local XProf, extract the downloaded ZIP and run <code>xprof --logdir /path/to/extracted-folder</code>.</p>
+<p>Captures are temporary and are removed when the trainer closes.</p>
+<script>
+const form = document.querySelector('#capture');
+const status = document.querySelector('#status');
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  form.querySelector('button').disabled = true;
+  status.textContent = 'Waiting for the next training step and preparing its trace…';
+  try {
+    const response = await fetch('profile', {method: 'POST', body: new FormData(form)});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    const row = document.createElement('p');
+    const open = document.createElement('button');
+    open.textContent = 'Open in Perfetto';
+    open.addEventListener('click', () => openTrace(result.trace, result.label));
+    const download = document.createElement('a');
+    download.href = result.trace;
+    download.textContent = 'Download Perfetto trace';
+    const native = document.createElement('a');
+    native.href = result.xprof;
+    native.textContent = 'Download XProf profile';
+    row.append(open, ' · ', download, ' · ', native);
+    document.querySelector('#captures').prepend(row);
+    status.textContent = 'Capture ready: ' + result.label;
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    form.querySelector('button').disabled = false;
+  }
+});
+async function openTrace(url, title) {
+  const origin = 'https://ui.perfetto.dev';
+  const viewer = window.open(origin);
+  if (!viewer) { status.textContent = 'Allow popups to open Perfetto, or download the trace.'; return; }
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('The capture is no longer available.');
+    const buffer = await response.arrayBuffer();
+    await new Promise((resolve, reject) => {
+      const receive = event => {
+        if (event.origin !== origin || event.source !== viewer || event.data !== 'PONG') return;
+        clearInterval(ping); clearTimeout(timeout);
+        window.removeEventListener('message', receive);
+        resolve();
+      };
+      const ping = setInterval(() => viewer.postMessage('PING', origin), 200);
+      const timeout = setTimeout(() => {
+        clearInterval(ping); window.removeEventListener('message', receive);
+        reject(new Error('Perfetto did not respond. Try again or download the trace.'));
+      }, 15000);
+      window.addEventListener('message', receive);
+    });
+    viewer.postMessage({perfetto: {buffer, title}}, origin, [buffer]);
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+</script>
+</html>

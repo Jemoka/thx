@@ -1,0 +1,471 @@
+:root {
+  --paper: #f7f7f7;
+  --ink: #2f3338;
+  --focus: #ebebeb;
+  --muted: #929292;
+  --accent: #37a5be;
+}
+html,
+body,
+#q-app {
+  height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+}
+body,
+button,
+input,
+select,
+textarea,
+.q-dialog {
+  font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 14px;
+  line-height: 20px;
+}
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) var(--paper);
+}
+.nicegui-content {
+  padding: 0;
+  gap: 0;
+  height: 100dvh;
+}
+.terminal {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+.hidden {
+  display: none !important;
+}
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  min-width: 3ch;
+  height: 20px;
+  padding: 0 1ch;
+  border: 0;
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: none;
+  cursor: pointer;
+  white-space: pre;
+  font: inherit;
+}
+button:hover,
+button:focus-visible,
+input:focus,
+summary:hover,
+summary:focus-visible {
+  background: var(--focus);
+  outline: none;
+}
+button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+input {
+  appearance: none;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  height: 20px;
+  font: inherit;
+  min-width: 0;
+  outline: none;
+}
+input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+input[type="range"] {
+  flex: 1;
+  width: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 1px;
+  background: var(--accent);
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-top: -3px;
+}
+input[type="range"]::-moz-range-track {
+  height: 1px;
+  background: var(--accent);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 7px;
+  height: 7px;
+  border: 0;
+  background: var(--accent);
+}
+.row-line {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  height: 20px;
+  min-height: 20px;
+  gap: 0;
+}
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+.bold,
+.preview-title {
+  font-weight: bold;
+}
+.muted,
+.age {
+  color: var(--muted);
+}
+.scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+.run-search {
+  width: 100%;
+  flex-shrink: 0;
+}
+.run-tree {
+  flex: 1;
+}
+.tree-row {
+  display: flex;
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+}
+.tree-row .age {
+  margin-left: auto;
+  padding-left: 1ch;
+}
+.workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.marked-runs {
+  color: var(--muted);
+  white-space: pre;
+  max-height: 100px;
+  overflow: auto;
+  margin-bottom: 20px;
+}
+.view-list {
+  flex: 1;
+}
+.log-list {
+  flex: 1;
+}
+.list-row {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+}
+.run-top {
+  display: flex;
+  flex-direction: column;
+  flex: 2;
+  min-height: 0;
+}
+.jump-input {
+  width: 9ch;
+  background: var(--focus);
+}
+.node-identity {
+  color: var(--muted);
+  justify-content: flex-start;
+  padding: 0;
+  margin-bottom: 20px;
+  width: 100%;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.node-identity.copied {
+  color: #538862;
+}
+.fields {
+  flex: 1;
+}
+details {
+  padding: 0;
+  margin: 0;
+}
+summary {
+  cursor: pointer;
+  height: 20px;
+  list-style: none;
+}
+summary::before {
+  content: "▶ ";
+}
+details[open] > summary::before {
+  content: "▼ ";
+}
+summary > div {
+  display: inline;
+}
+.field-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.timeline {
+  display: flex;
+  position: relative;
+  height: 20px;
+  min-height: 20px;
+  cursor: pointer;
+  outline: none;
+}
+.timeline:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: -1px;
+}
+.timeline-cursor {
+  position: absolute;
+  top: 0;
+  font-weight: bold;
+  pointer-events: none;
+}
+.edit-actions button {
+  width: 9ch;
+  color: var(--muted);
+}
+.edit-actions input {
+  width: 12ch;
+  background: var(--focus);
+}
+.axis-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+}
+.axis-picker > button {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0;
+}
+.axis-options {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  width: 100%;
+  max-height: 160px;
+  overflow: auto;
+  background: var(--paper);
+  z-index: 10;
+}
+.plot-toggle {
+  color: var(--muted);
+  width: 10ch;
+  justify-content: flex-start;
+  padding: 0;
+}
+.plot-toggle:nth-child(3) {
+  width: 15ch;
+}
+.plot-toggle.enabled {
+  color: var(--accent);
+}
+.smoothing {
+  flex: 1;
+  gap: 1ch;
+}
+.smoothing:focus-within,
+.smoothing:hover {
+  background: var(--focus);
+}
+.plot-canvas {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+.graph {
+  overflow: hidden;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  touch-action: none;
+  user-select: none;
+}
+.graph svg {
+  display: block;
+  overflow: hidden;
+  font: inherit;
+  fill: var(--ink);
+}
+.plot-footer {
+  white-space: pre;
+  overflow-x: auto;
+  font-weight: bold;
+  gap: 2ch;
+}
+.axis-name {
+  margin-left: auto;
+}
+.plot-preview {
+  height: 160px;
+  outline: none;
+}
+.plot-preview:hover > .preview-title,
+.plot-preview:focus-visible > .preview-title {
+  background: var(--focus);
+}
+.preview-chart {
+  height: 140px;
+}
+.preview-chart .plot-footer {
+  display: none;
+}
+.walk-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--paper);
+}
+.walk-dialog iframe {
+  border: 0;
+}
+.plotly-chart {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.chart-gestures {
+  position: absolute;
+  touch-action: none;
+  cursor: crosshair;
+}
+.zoom-box {
+  position: absolute;
+  display: none;
+  border: 1px solid #929292;
+  pointer-events: none;
+}
+.inspect-line {
+  position: absolute;
+  display: none;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid #d5d5d5;
+  pointer-events: none;
+}
+.chart-heading {
+  gap: 1ch;
+  white-space: pre;
+  overflow: hidden;
+}
+.checkpoint-label {
+  color: var(--accent);
+  white-space: pre;
+}
+.log-metadata {
+  color: var(--muted);
+  min-height: 20px;
+  flex-shrink: 0;
+  white-space: pre;
+  overflow-x: auto;
+}
+.log-following {
+  color: var(--accent);
+  padding: 0 1ch;
+}
+.log-view {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  background: var(--paper);
+}
+.log-view .q-scrollarea__content {
+  min-width: 100%;
+}
+.log-line {
+  display: grid;
+  grid-template-columns: 9ch max-content;
+  min-height: 20px;
+  width: max-content;
+  min-width: 100%;
+}
+.log-line-number {
+  color: var(--muted);
+  padding-right: 1ch;
+  text-align: right;
+  user-select: none;
+}
+.log-line-content {
+  white-space: pre;
+}
+.log-partial .log-line-content {
+  color: var(--muted);
+}
+.tree-row:focus {
+  background: var(--focus);
+  outline: none;
+}
+.plot-footer,
+.chart-heading {
+  flex-wrap: wrap;
+  height: auto;
+  flex-shrink: 0;
+  overflow: visible;
+  white-space: normal;
+  row-gap: 0;
+}
+.plot-footer > * {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.plot-footer button {
+  height: auto;
+  min-height: 20px;
+  padding: 0;
+  text-align: left;
+}
+.plot-footer .axis-name {
+  margin-left: auto;
+}
+.chart-heading > div {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.tree-mark {
+  color: var(--accent);
+  white-space: pre;
+}

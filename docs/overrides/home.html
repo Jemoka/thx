@@ -1,0 +1,19 @@
+{% extends "main.html" %}
+
+{% block htmltitle %}<title>{{ config.site_name }}</title>{% endblock %}
+{% block extrahead %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ 'assets/home.css' | url }}">
+{% endblock %}
+{% block header %}{% endblock %}
+{% block tabs %}{% endblock %}
+{% block site_nav %}{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block container %}
+  <div class="md-content" data-md-component="content">
+    <article class="md-typeset theseus-home">
+      {{ page.content }}
+    </article>
+  </div>
+{% endblock %}

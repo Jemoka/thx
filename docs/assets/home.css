@@ -1,0 +1,42 @@
+.theseus-home {
+  width: min(100%, 48rem);
+  margin: 0 auto;
+  padding: clamp(2rem, 7vh, 5rem) 1.2rem 3rem;
+}
+
+.theseus-home h1 {
+  margin: 0 0 0.25em;
+  font-size: clamp(4rem, 14vw, 8rem);
+  font-weight: 600;
+  letter-spacing: -0.065em;
+  line-height: 1;
+}
+
+.theseus-home h1 .headerlink {
+  display: none;
+}
+
+.theseus-home h1 .theseus-colophon {
+  width: 0.22em;
+  height: auto;
+  margin-left: 0.12em;
+  vertical-align: baseline;
+}
+
+.theseus-home > p:not(:last-child) {
+  max-width: 40rem;
+  margin: 0 0 1.5rem;
+  font-size: clamp(1rem, 2.5vw, 1.4rem);
+  line-height: 1.5;
+}
+
+.theseus-home .highlight {
+  max-width: 38rem;
+  margin: 0 0 1.5rem;
+}
+
+.theseus-home .md-button {
+  padding: 0.6em 1.1em;
+  font-size: 1rem;
+  text-decoration: none;
+}

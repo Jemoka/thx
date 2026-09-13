@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Documentation build artifacts
+site/
+.cache/
+docs/Reference/
+
+# Internal company-specific docs
+examples/volcano_c.md
+examples/volcano_d.md
+scripts/cjob
+runlogs
+
+# Emacs autosave and lock files
+\#*#
+.#*
+.DS_Store

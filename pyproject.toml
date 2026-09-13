@@ -1,0 +1,255 @@
+[project]
+name = "libthx"
+version = "0.1.0"
+description = "Architecture experimentation and training infrastructure."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "click>=8.2.1",
+    "cloudpickle>=3.1.1",
+    "flax>=0.12.2",
+    "flatbuffers>=25.12.0",
+    "jsonlines>=4.0.0",
+    "loguru>=0.7.3",
+    "numpy>=2.4.1",
+    "omegaconf>=2.3.0",
+    "orbax>=0.1.9",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+    "rich>=13.5.2",
+    "seaborn>=0.13.2",
+    "tiktoken>=0.12.0",
+    "torchax>=0.0.11",
+    "wandb>=0.24.1",
+    "datasets>=4.5.0",
+    "huggingface-hub>=1.4.1",
+    "flatbuffers>=25.12.19",
+    "pyarrow>=23.0.1",
+    "chdb>=4.3.0",
+    "deltalake>=1.6.3",
+    "typer>=0.24.1",
+    "nicegui>=3.16.0,<4",
+    "pygwalker>=0.5.0.1",
+    "pandas>=2",
+    "comet-ml>=3.58.6",
+    "bottle>=0.13.4",
+    "cheroot>=11.1.2",
+]
+
+
+[project.scripts]
+theseus = "theseus.cli.app:app"
+
+[project.optional-dependencies]
+# Keep extras and dependency groups aligned manually.
+fever = ["wikipedia>=1.4.0"]
+huggingface = [
+    "tokenizers>=0.22.2",
+    "transformers>=5.1.0",
+    "accelerate>=1.13.0",
+]
+cuda13 = [
+    "jax[cuda13]>=0.4.23",
+    "torch>=2.9.1",
+    "torchax>=0.0.11",
+]
+cuda12 = [
+    "jax[cuda12]>=0.4.23",
+    "torch>=2.9.1",
+    "torchax>=0.0.11",
+]
+tpu = [
+    "jax[tpu]>=0.4.23",
+    "torch>=2.9.1",
+    "torchax>=0.0.11",
+]
+cpu = [
+    "jax>=0.4.23",
+    "torch>=2.9.1",
+    "torchax>=0.0.11",
+]
+dev = [
+    "coverage>=7.9.1",
+    "coveralls>=4.0.1",
+    "pytest>=8.4.1",
+    "playwright>=1.55.0",
+    "pytest-cov>=6.2.1",
+    "ruff>=0.12.1",
+    "pre-commit>=4.2.0",
+    "mypy>=1.16.1",
+    "ipdb>=0.13.13",
+    "xprof~=2.21.5",
+]
+docs = [
+    "zensical>=0.0.60,<0.1",
+    "mkdocstrings-python>=2.0.3",
+    "pymdown-extensions>=10.15",
+]
+all = [
+    "tokenizers>=0.22.2",
+    "transformers>=5.1.0",
+    "accelerate>=1.13.0",
+    "coverage>=7.9.1",
+    "coveralls>=4.0.1",
+    "pytest>=8.4.1",
+    "playwright>=1.55.0",
+    "pytest-cov>=6.2.1",
+    "ruff>=0.12.1",
+    "pre-commit>=4.2.0",
+    "mypy>=1.16.1",
+    "ipdb>=0.13.13",
+    "xprof~=2.21.5",
+    "zensical>=0.0.60,<0.1",
+    "mkdocstrings-python>=2.0.3",
+    "pymdown-extensions>=10.15",
+    "wikipedia>=1.4.0",
+]
+
+[dependency-groups]
+# job-specific dependencies
+fever = [
+    "wikipedia>=1.4.0",
+]
+
+# ML dependencies
+# sorry for the cursèd imports; we need
+# BOTH Jax and torch b/c Jax is used as
+# our main infrastructure and torch is
+# sometimes invoked as a compatibility layer
+# in particular to load HF weights etc.
+# 
+# also we use torchax for best-effort tracing
+# of models that we didn't reimplement
+huggingface = [
+    "tokenizers>=0.22.2",
+    "transformers>=5.1.0",
+    "accelerate>=1.13.0",
+]
+cuda13 = [
+    "jax[cuda13]>=0.4.23",
+    "torch>=2.9.1",
+    "torchax>=0.0.11",
+]
+cuda12 = [
+    "jax[cuda12]>=0.4.23",
+    "torch>=2.9.1",
+    "torchax>=0.0.11",
+]
+tpu = [
+    "jax[tpu]>=0.4.23",
+    "torch>=2.9.1",
+    "torchax>=0.0.11",
+]
+cpu = [
+    "jax>=0.4.23",
+    "torch>=2.9.1",
+    "torchax>=0.0.11",
+]
+
+
+# developer helpers
+dev = [
+    "coverage>=7.9.1",
+    "coveralls>=4.0.1",
+    "pytest>=8.4.1",
+    "playwright>=1.55.0",
+    "pytest-cov>=6.2.1",
+    "ruff>=0.12.1",
+    "pre-commit>=4.2.0",
+    "mypy>=1.16.1",
+    "ipdb>=0.13.13",
+    "xprof~=2.21.5",
+]
+docs = [
+    "zensical>=0.0.60,<0.1",
+    "mkdocstrings-python>=2.0.3",
+    "pymdown-extensions>=10.15",
+]
+
+# utilities / aliases
+all = [
+    {include-group = "dev"},
+    {include-group = "docs"},
+    {include-group = "huggingface"},
+    # and all job-specific dependencies
+    {include-group = "fever"}
+]
+
+
+[tool.uv]
+default-groups = ["all"]
+package = true
+
+
+conflicts = [
+  # Exactly one of these “flavors” may be used at a time.
+  [
+    { group = "cpu" },
+    { group = "tpu" },
+    { group = "cuda12" },
+    { group = "cuda13" },
+  ]
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", group = "cpu" },
+  { index = "pytorch-cpu", group = "tpu" },
+  { index = "pytorch-cu128", group = "cuda12" },
+  { index = "pytorch-cu130", group = "cuda13" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.format]
+indent-style = "space"
+docstring-code-format = true
+docstring-code-line-length = 20
+
+[tool.pytest.ini_options]
+# ``contrib`` is not installed as a package by setuptools (only
+# ``theseus*`` is — see ``[tool.setuptools.packages.find]``), but tests
+# can still import from it because uv runs everything with the repo
+# root as cwd. Pytest, however, doesn't add the rootdir to ``sys.path``
+# by default, so we do it here.
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.mypy]
+plugins = ['pydantic.mypy']
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+exclude = ["tests", "examples"]
+
+[[tool.mypy.overrides]]
+module = "huggingface_hub.*"
+ignore_missing_imports = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["theseus*"]
+exclude = []
+
+[tool.setuptools.package-data]
+"theseus.cli.interface" = ["*.css", "*.js"]
+"theseus.execute" = ["bootstrap.sh"]
+"theseus.training" = ["profiler.html"]

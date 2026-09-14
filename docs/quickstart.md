@@ -11,8 +11,8 @@ this is theseus. it makes GPUs and TPUs warm and fuzzy inside by harnessing the 
 theseus is a template repo. You use it by having it. So, please, clone the repo:
 
 ```bash
-git clone https://github.com/Jemoka/thx.git
-cd thx
+git clone https://github.com/Jemoka/thx.git theseus
+cd theseus
 ```
 
 We use the [uv package manager](https://docs.astral.sh/uv/getting-started/), so make sure you have that. Now, depending on from whomst your computers must be warm, please choose your adventure:

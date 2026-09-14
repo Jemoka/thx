@@ -1,5 +1,10 @@
 # Config System
 
+???+ warning "Coming Soon"
+    Heyoooo so I ran out of time writing docs as I have to do actual machine learning. I'll eventually catch this up but as of right now here's my friend `gpt-6-astra` who will do the talking.
+
+---
+
 This document covers `theseus/config.py` — the lightweight, dataclass-driven configuration layer that ties together model architecture, training hyperparameters, and runtime settings into a single OmegaConf YAML.
 
 ---

@@ -64,9 +64,9 @@ job supplies batches itself. Loader batches
 are keyed by the shared `node`: repeated `batch()` calls return the same data
 until the job ticks. Resuming advances to the successor of the saved node.
 
-The specialized trainers in `theseus.training` support DPO,
-two-stage KL regularization, and LoRA. KL and LoRA use the normal static `DATASET`
-declaration; their token budgets control objective or adapter transitions.
+The specialized trainers in `theseus.training` support DPO and two-stage
+KL regularization. KL uses the normal static `DATASET` declaration; its token
+budgets control objective transitions.
 Benchmark trainers declare curriculum mixtures through `STAGES`. HuggingFace
 backbone trainers use `architecture/backbone/implementation` and `weights` to
 load the initial architecture and parameters.

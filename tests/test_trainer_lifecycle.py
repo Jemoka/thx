@@ -15,7 +15,6 @@ from theseus.data.datasets import DatasetComponent
 from theseus.training.flywheel.strategy import Sampling
 from theseus.training.contrastive import ContrastiveTrainer, ContrastiveTrainState
 from theseus.training.kl_divergence import KLDivergenceTrainer, KLDivergenceTrainState
-from theseus.training.lora import LoRATrainer, LoRATrainState
 from tests.test_stack_e2e import TinyModel
 
 
@@ -26,7 +25,6 @@ class LocalData(DatasetComponent):
 @pytest.mark.parametrize("trainer_type,state_type", [
     (ContrastiveTrainer, ContrastiveTrainState),
     (KLDivergenceTrainer, KLDivergenceTrainState),
-    (LoRATrainer, LoRATrainState),
 ])
 def test_specialized_trainer_checkpoint_lifecycle(tmp_path, trainer_type, state_type):
     class Trainer(trainer_type):
@@ -54,10 +52,7 @@ def test_specialized_trainer_checkpoint_lifecycle(tmp_path, trainer_type, state_
         trainer.state = jax.jit(lambda state: state.apply_gradients(
             grads=jax.tree.map(jnp.ones_like, state.params)
         ))(trainer.state)
-        if trainer_type is LoRATrainer:
-            trainer._transition_to_lora()
-            assert int(trainer.state.step) == 1
-        elif trainer_type is KLDivergenceTrainer:
+        if trainer_type is KLDivergenceTrainer:
             trainer._snapshot_reference()
             trainer.state = trainer.state.replace(beta=jnp.asarray(trainer.kl_config.beta, dtype=jnp.float32))
         assert isinstance(trainer.state, state_type)
@@ -122,47 +117,6 @@ def test_backbone_initialization_uses_native_setup(tmp_path, monkeypatch, evalua
 
 
 
-def test_lora_training_crosses_phase_boundary_with_cached_batches(tmp_path):
-    from theseus.inference.base import InferenceJob
-
-    class Trainer(LoRATrainer):
-        MODEL = TinyModel
-        DATASET = [Sampling(LocalData, 1, "padded")]
-        EVALUATION = []
-
-    data = tmp_path / "data" / "fixture"
-    data.mkdir(parents=True)
-    tokens = np.tile(np.arange(4, dtype=np.uint32), (8, 1))
-    for split in ("train", "val"):
-        tokens.tofile(data / f"{split}.bin")
-        np.ones_like(tokens, bool).tofile(data / f"{split}.bin.mask")
-    (data / "shape.json").write_text(json.dumps({"train": [8, 4], "val": [8, 4]}))
-    cfg = OmegaConf.merge(build(*Trainer.config()), {
-        "architecture": {"block_size": 4, "dtype": {"param": "float32", "activation": "float32"}},
-        "training": {"batch_size": 1, "per_device_batch_size": 1, "validation_steps": 1,
-                     "pre_lora_tokens": [4], "post_lora_tokens": [4], "validation": True, "evaluate": False},
-        "logging": {"validation_interval": 100, "checkpoint_interval": 100},
-        "data": {"suffix": ""},
-    })
-    with configuration(cfg):
-        trainer = Trainer(ExecutionSpec.local(str(tmp_path)))
-        try:
-            trainer.setup()
-            first = trainer.batch()
-            assert trainer.batch() is first
-            assert not trainer._in_lora_phase
-            trainer.train()
-            assert trainer._in_lora_phase
-            assert isinstance(trainer.state, LoRATrainState)
-            assert int(trainer.state.step) >= 2
-            assert any(np.any(value != 0) for value in jax.tree.leaves(trainer.state.params["lora_B"]))
-            batch = jax.tree.map(jnp.asarray, trainer.batch())
-            logits, _, _ = InferenceJob.forward(trainer.state, trainer.state.params,
-                                               (batch["x"], batch["y"], batch["padding_mask"]), deterministic=True)
-            expected, _, _ = trainer.forward(trainer.state, trainer.state.params, batch, deterministic=True)
-            np.testing.assert_allclose(logits, expected)
-        finally:
-            trainer.finish()
 
 
 

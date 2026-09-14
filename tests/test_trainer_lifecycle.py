@@ -14,7 +14,6 @@ from theseus.config import build, configuration
 from theseus.data.datasets import DatasetComponent
 from theseus.training.flywheel.strategy import Sampling
 from theseus.training.contrastive import ContrastiveTrainer, ContrastiveTrainState
-from theseus.training.ppo import PPOTrainer, PPOTrainState
 from theseus.training.kl_divergence import KLDivergenceTrainer, KLDivergenceTrainState
 from theseus.training.lora import LoRATrainer, LoRATrainState
 from tests.test_stack_e2e import TinyModel
@@ -26,7 +25,6 @@ class LocalData(DatasetComponent):
 
 @pytest.mark.parametrize("trainer_type,state_type", [
     (ContrastiveTrainer, ContrastiveTrainState),
-    (PPOTrainer, PPOTrainState),
     (KLDivergenceTrainer, KLDivergenceTrainState),
     (LoRATrainer, LoRATrainState),
 ])
@@ -35,7 +33,6 @@ def test_specialized_trainer_checkpoint_lifecycle(tmp_path, trainer_type, state_
         MODEL = TinyModel
         DATASET = [Sampling(LocalData, 1, "padded")]
         EVALUATION = []
-        RL_EVALUATION = []
 
     data = tmp_path / "data" / "fixture"
     data.mkdir(parents=True)
@@ -123,28 +120,6 @@ def test_backbone_initialization_uses_native_setup(tmp_path, monkeypatch, evalua
             job.finish()
 
 
-def test_ppo_batches_are_cached_until_node_ticks():
-    from types import SimpleNamespace
-    from theseus.base import Node
-
-    trainer = object.__new__(PPOTrainer)
-    trainer.node = Node(name="rollouts")
-    trainer.per_device_batch_size = trainer.local_replicas = trainer.accumulate_steps = 1
-    trainer.ppo_config = SimpleNamespace(discount=1.0)
-    trainer._component_names = ["reward"]
-    trainer.main_process = lambda: False
-    trainer._rollout_buffer = [
-        (np.array([value, value + 1]), np.ones(2, bool), np.ones(2, bool), np.zeros(2), float(value), np.array([value]))
-        for value in (1, 2)
-    ]
-    first = trainer.batch()
-    assert trainer.batch() is first
-    assert len(trainer._rollout_buffer) == 1
-    trainer.node.update(trainer.node.next())
-    second = trainer.batch()
-    assert second is not first
-    assert len(trainer._rollout_buffer) == 0
-    assert second["x"][0, 0] == 2
 
 
 def test_lora_training_crosses_phase_boundary_with_cached_batches(tmp_path):

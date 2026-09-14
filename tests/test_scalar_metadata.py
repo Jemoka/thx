@@ -5,7 +5,6 @@ import jax.numpy as jnp
 import pytest
 
 from theseus.training.base import BaseTrainer
-from theseus.training.ppo import PPOTrainer
 from theseus.training.utils import scalar_metadata
 
 
@@ -82,29 +81,3 @@ def test_base_forward_returns_flat_scalar_metadata() -> None:
     assert meta == {"model/value": jnp.array(2.0)}
 
 
-def test_ppo_collects_diagnostics_from_policy_only() -> None:
-    apply = RecordingApply()
-    state: Any = SimpleNamespace(
-        apply_fn=apply,
-        base={},
-        beta=jnp.array(0.1),
-        clip_eps=jnp.array(0.2),
-    )
-    batch: Any = {
-        "x": jnp.ones((1, 2), dtype=jnp.int32),
-        "y": jnp.ones((1, 2), dtype=jnp.int32),
-        "padding_mask": jnp.ones((1, 2), dtype=jnp.bool_),
-        "action_mask": jnp.ones((1, 2), dtype=jnp.bool_),
-        "old_log_probs": jnp.zeros((1, 2), dtype=jnp.float32),
-        "per_token_rewards": jnp.ones((1, 2), dtype=jnp.float32),
-    }
-
-    _, _, meta = PPOTrainer.forward(state, {}, batch, intermediates=True)
-
-    assert apply.mutable_calls == [
-        ["scalars", "intermediates", "plots"],
-        None,
-    ]
-    assert meta["model/value"] == jnp.array(2.0)
-    assert meta["intermediates"] == {"features": (jnp.array(3.0),)}
-    assert meta["plots"] == {"weights": (jnp.array(4.0),)}

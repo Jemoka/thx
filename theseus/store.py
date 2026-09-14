@@ -207,27 +207,6 @@ class ObjectReader:
         ]
 
 
-def compact_values(values: str | Path) -> dict[str, Any] | None:
-    """Compact a value table, reloading after concurrent commit conflicts.
-
-    An absent table is a no-op. Obsolete files remain available to readers
-    until an explicit vacuum removes them after the retention period.
-    """
-    for attempt in range(_DELTA_IO_ATTEMPTS):
-        try:
-            return cast(
-                dict[str, Any],
-                ObjectReader._retry_io(lambda: DeltaTable(values).optimize.compact()),
-            )
-        except TableNotFoundError:
-            return None
-        except CommitFailedError:
-            if attempt + 1 == _DELTA_IO_ATTEMPTS:
-                raise
-            sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
-    raise AssertionError("unreachable")
-
-
 class ObjectStore(ObjectReader):
     """Store blobs and scalar metadata associated with experiment DAG nodes.
 
@@ -272,6 +251,28 @@ class ObjectStore(ObjectReader):
         """
         return cls(local_hardware(str(root_dir), "-"))
 
+    @classmethod
+    def compact(cls, root_dir: str | Path) -> dict[str, Any] | None:
+        """Compact ROOT/objects/values without starting a writer or vacuuming.
+
+        Reload the table after concurrent commit conflicts. An absent table
+        is a no-op; obsolete files remain available to existing readers.
+        """
+        values = Path(root_dir) / "objects" / "values"
+        for attempt in range(_DELTA_IO_ATTEMPTS):
+            try:
+                return cast(
+                    dict[str, Any],
+                    cls._retry_io(lambda: DeltaTable(values).optimize.compact()),
+                )
+            except TableNotFoundError:
+                return None
+            except CommitFailedError:
+                if attempt + 1 == _DELTA_IO_ATTEMPTS:
+                    raise
+                sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
+        raise AssertionError("unreachable")
+
     def close(self) -> None:
         """Commit queued values, stop the writer, and compact the value table.
 
@@ -292,7 +293,7 @@ class ObjectStore(ObjectReader):
 
         self._raise_writer_error()
         try:
-            compact_values(self.values())
+            self.compact(self.root().parent)
         except Exception as error:
             logger.warning(
                 "STORE | value compaction failed for {}: {}", self.values(), error

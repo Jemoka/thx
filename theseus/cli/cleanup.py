@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 import typer
 
-from theseus.store import compact_values
+from theseus.store import ObjectStore
 
 
 def cleanup(
@@ -18,7 +18,7 @@ def cleanup(
     values = root / "objects" / "values"
     try:
         logger.info("CLEANUP | compacting {}", values)
-        metrics = compact_values(values)
+        metrics = ObjectStore.compact(root)
         if metrics is None:
             logger.info("CLEANUP | no Delta value table at {}", values)
             return

@@ -13,7 +13,7 @@ from deltalake.table import TableOptimizer
 from typer.testing import CliRunner
 
 from theseus.cli.app import app
-from theseus.store import ObjectStore, compact_values
+from theseus.store import ObjectStore
 import theseus.store as store_module
 
 
@@ -56,7 +56,8 @@ def test_cleanup_missing_table_is_noop(tmp_path):
 def test_compaction_preserves_concurrent_append_and_retries_schema_change(
     tmp_path, monkeypatch, schema_change,
 ):
-    seed(tmp_path)
+    values = tmp_path / "objects" / "values"
+    seed(values)
     original = TableOptimizer.compact
     calls = 0
 
@@ -67,15 +68,15 @@ def test_compaction_preserves_concurrent_append_and_retries_schema_change(
             data = {"value": [3]}
             if schema_change:
                 data["new_column"] = [4]
-            write_deltalake(tmp_path, pa.table(data), mode="append", schema_mode="merge")
+            write_deltalake(values, pa.table(data), mode="append", schema_mode="merge")
         return original(optimizer)
 
     monkeypatch.setattr(TableOptimizer, "compact", racing_compact)
     monkeypatch.setattr(store_module, "_DELTA_IO_RETRY_SECONDS", 0)
-    compact_values(tmp_path)
+    ObjectStore.compact(tmp_path)
 
     assert calls == (2 if schema_change else 1)
-    rows = DeltaTable(tmp_path).to_pyarrow_table()
+    rows = DeltaTable(values).to_pyarrow_table()
     assert sorted(rows["value"].to_pylist()) == [0, 1, 2, 3]
     if schema_change:
         assert rows.filter(pa.compute.equal(rows["value"], 3))["new_column"].to_pylist() == [4]
@@ -89,7 +90,7 @@ def test_close_logs_compaction_failure_after_flushing(tmp_path, monkeypatch):
     warning = Mock()
     monkeypatch.setattr(store_module.logger, "warning", warning)
     monkeypatch.setattr(
-        store_module, "compact_values", Mock(side_effect=CommitFailedError("conflict")),
+        ObjectStore, "compact", Mock(side_effect=CommitFailedError("conflict")),
     )
     store.close()
     warning.assert_called_once()

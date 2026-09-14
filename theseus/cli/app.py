@@ -42,7 +42,7 @@ def main(
     """Run and inspect Theseus workloads."""
     logger.remove()
     logger.add(
-        lambda message: sys.stderr.write(message),
+        sys.stderr,
         level="DEBUG" if verbose else "INFO",
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
         backtrace=False,

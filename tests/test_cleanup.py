@@ -1,6 +1,7 @@
 """Value-table maintenance preserves committed rows and reader snapshots."""
 
 import os
+import importlib
 import shutil
 from time import time
 from unittest.mock import Mock
@@ -22,7 +23,8 @@ def seed(values):
         write_deltalake(values, pa.table({"value": [value]}), mode="append")
 
 
-def test_cleanup_compacts_and_vacuums_only_expired_files(tmp_path):
+@pytest.mark.parametrize("expire", [False, True])
+def test_cleanup_compacts_and_vacuums_with_selected_retention(tmp_path, monkeypatch, expire):
     values = tmp_path / "objects" / "values"
     seed(values)
     snapshot = DeltaTable(values)
@@ -31,18 +33,48 @@ def test_cleanup_compacts_and_vacuums_only_expired_files(tmp_path):
     shutil.copyfile(old_files[0], expired)
     old_time = time() - 8 * 24 * 3600
     os.utime(expired, (old_time, old_time))
+    recent = values / "recent-orphan.parquet"
+    shutil.copyfile(old_files[0], recent)
+    cleanup_module = importlib.import_module("theseus.cli.cleanup")
+    delay = Mock()
+    monkeypatch.setattr(cleanup_module, "sleep", delay)
 
-    result = CliRunner().invoke(app, ["cleanup", str(tmp_path)])
+    result = CliRunner().invoke(app, ["cleanup", str(tmp_path), *(["--expire"] if expire else [])])
 
     assert result.exit_code == 0, result.output
     assert "Value table cleanup" in result.output
     assert "CLEANUP | compacting" in result.output
     assert "CLEANUP | vacuuming" in result.output
     assert not expired.exists()
+    assert recent.exists() is not expire
     assert len(DeltaTable(values).file_uris()) == 1
-    # Readers bound before compaction still have all their files.
-    assert sorted(snapshot.to_pyarrow_table()["value"].to_pylist()) == [0, 1, 2]
+    if expire:
+        delay.assert_called_once_with(10)
+        assert "PERMANENTLY DELETES" in result.output
+        assert all(not os.path.exists(path) for path in old_files)
+    else:
+        delay.assert_not_called()
+        # Default retention preserves readers bound before compaction.
+        assert sorted(snapshot.to_pyarrow_table()["value"].to_pylist()) == [0, 1, 2]
     assert sorted(DeltaTable(values).to_pyarrow_table()["value"].to_pylist()) == [0, 1, 2]
+
+
+def test_cleanup_expire_can_be_cancelled_before_mutation(tmp_path, monkeypatch):
+    cleanup_module = importlib.import_module("theseus.cli.cleanup")
+    delay = Mock(side_effect=KeyboardInterrupt)
+    compact = Mock()
+    vacuum = Mock()
+    monkeypatch.setattr(cleanup_module, "sleep", delay)
+    monkeypatch.setattr(ObjectStore, "compact", compact)
+    monkeypatch.setattr(DeltaTable, "vacuum", vacuum)
+
+    result = CliRunner().invoke(app, ["cleanup", str(tmp_path), "--expire"])
+
+    assert result.exit_code != 0
+    assert "Press Ctrl-C within 10 seconds" in result.output
+    delay.assert_called_once_with(10)
+    compact.assert_not_called()
+    vacuum.assert_not_called()
 
 
 def test_cleanup_missing_table_is_noop(tmp_path):

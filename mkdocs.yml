@@ -82,7 +82,6 @@ nav:
     - Your own experiments: Tutorials/adding.md
     - What's Next: Tutorials/next.md
   - How-to Guides:
-    - Disclosing Code: How-to/disclosure.md
     - Analysis System: How-to/analysis.md
     - Evaluation System: How-to/evaluation.md
     - Remote Configuration:
@@ -107,6 +106,7 @@ nav:
         - Attention: How-to/adding/extending/attention.md
         - MLP: How-to/adding/extending/mlp.md
         - Mixture of Experts: How-to/adding/extending/moe.md
+    - Disclosing Code: How-to/disclosure.md
   - Design:
     - Overview: Design/index.md
     - Sharp Edges: Design/sharp.md

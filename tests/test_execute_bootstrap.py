@@ -603,6 +603,38 @@ def test_bootstrap_autobatch_isolates_probes_and_overrides_real_run(
     assert "probing training.per_device_batch_size=512" in contents
 
 
+def test_bootstrap_autobatch_waits_for_delayed_log_writer(
+    render_bootstrap: Callable[[int], tuple[Path, Path, Path, Path]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import shlex
+
+    script, dispatch, calls, logs = render_bootstrap(-1)
+    monkeypatch.setenv("THESEUS_DISPATCH_PROBE_COOLDOWN_SECONDS", "0")
+    real_tee = shutil.which("tee")
+    assert real_tee is not None
+    delayed_tee = tmp_path / "bin" / "tee"
+    delayed_tee.write_text(
+        '#!/usr/bin/env bash\n'
+        'if [[ "$1" == */autobatch-*.log ]]; then sleep 2; fi\n'
+        f'exec {shlex.quote(real_tee)} "$@"\n'
+    )
+    delayed_tee.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", script, dispatch], text=True, capture_output=True, timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "No such file or directory" not in output
+    run_calls = [line for line in calls.read_text().splitlines() if line.startswith("run")]
+    assert len(run_calls) == 3
+    assert "dispatch.json training.per_device_batch_size=512" in run_calls[-1]
+    assert "RESOURCE_EXHAUSTED" in (logs / "project-group-name-abc123.0.log").read_text()
+
+
 def test_bootstrap_autobatch_skips_clamped_duplicate_candidates(
     render_bootstrap: Callable[[int], tuple[Path, Path, Path, Path]],
     monkeypatch: pytest.MonkeyPatch,

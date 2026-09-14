@@ -25,6 +25,7 @@ from typing import (
     Mapping,
     Self,
     Sequence,
+    TypeVar,
     cast,
     overload,
 )
@@ -37,6 +38,7 @@ import pyarrow as pa
 from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import CommitFailedError, TableNotFoundError
 from flax import serialization
+from loguru import logger
 
 from theseus.base import JobSpec, Node, PyTree
 from theseus.base.hardware import HardwareResult, local as local_hardware
@@ -46,6 +48,7 @@ _VALUE_BATCH_SIZE = 4096
 _VALUE_FLUSH_SECONDS = 30.0
 _DELTA_IO_ATTEMPTS = 3
 _DELTA_IO_RETRY_SECONDS = 0.25
+_IOResult = TypeVar("_IOResult")
 _chdb_query = cast(Callable[..., pa.Table], chdb.query)
 _METADATA_TYPES: dict[str, pa.DataType] = {
     "_x_blob": pa.string(),
@@ -153,7 +156,7 @@ class ObjectReader:
         )
 
     @staticmethod
-    def _retry_io(operation: Callable[[], Any]) -> Any:
+    def _retry_io(operation: Callable[[], _IOResult]) -> _IOResult:
         for attempt in range(_DELTA_IO_ATTEMPTS):
             try:
                 return operation()
@@ -248,10 +251,34 @@ class ObjectStore(ObjectReader):
         """
         return cls(local_hardware(str(root_dir), "-"))
 
+    @classmethod
+    def compact(cls, root_dir: str | Path) -> dict[str, Any] | None:
+        """Compact ROOT/objects/values without starting a writer or vacuuming.
+
+        Reload the table after concurrent commit conflicts. An absent table
+        is a no-op; obsolete files remain available to existing readers.
+        """
+        values = Path(root_dir) / "objects" / "values"
+        for attempt in range(_DELTA_IO_ATTEMPTS):
+            try:
+                return cast(
+                    dict[str, Any],
+                    cls._retry_io(lambda: DeltaTable(values).optimize.compact()),
+                )
+            except TableNotFoundError:
+                return None
+            except CommitFailedError:
+                if attempt + 1 == _DELTA_IO_ATTEMPTS:
+                    raise
+                sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
+        raise AssertionError("unreachable")
+
     def close(self) -> None:
-        """Commit queued values and stop the writer without rewriting files.
+        """Commit queued values, stop the writer, and compact the value table.
 
         A successfully closed store may be restarted with :meth:`start`.
+        Compaction failures are logged without failing committed writes.
+        Closing never vacuums files needed by existing readers.
 
         Raises:
             RuntimeError: If the background writer failed while producing a
@@ -265,6 +292,12 @@ class ObjectStore(ObjectReader):
         self.thread = None
 
         self._raise_writer_error()
+        try:
+            self.compact(self.root().parent)
+        except Exception as error:
+            logger.warning(
+                "STORE | value compaction failed for {}: {}", self.values(), error
+            )
 
     #### public writes ####
 

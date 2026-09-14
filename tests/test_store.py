@@ -203,7 +203,7 @@ def test_value_batch_flush_and_lifecycle(
     assert store.thread is not None and store.thread is not first_thread
     store.value(node, {"restarted": 1})
     store.close()
-    assert len(DeltaTable(store.values()).file_uris()) == 2
+    assert len(DeltaTable(store.values()).file_uris()) == 1
     assert store.query().node(node).select() == [{"loss": 2.0, "restarted": 1}]
 
 
@@ -222,7 +222,7 @@ def test_value_time_flush(
     assert store.query().node(node).select() == [{"value": 1}]
 
 
-def test_close_does_not_rewrite_or_remove_committed_parts(
+def test_close_compacts_without_vacuuming_committed_parts(
     hardware: HardwareResult, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(store_module, "_VALUE_BATCH_SIZE", 1)
@@ -235,8 +235,11 @@ def test_close_does_not_rewrite_or_remove_committed_parts(
     before = {part: part.read_bytes() for part in parts}
     version = DeltaTable(store.values()).version()
     store.close()
+    compacted = DeltaTable(store.values())
+    assert len(compacted.file_uris()) == 1
+    assert compacted.version() > version
     store.close()
-    assert DeltaTable(store.values()).version() == version
+    assert DeltaTable(store.values()).version() == compacted.version()
     assert {part: part.read_bytes() for part in parts} == before
     assert store.query().all() == [
         Node(name="train", nonce="abcdef", seq=0),
@@ -304,7 +307,7 @@ def test_parallel_processes_publish_without_collisions(
 
     second.close()
     parts = DeltaTable(first.values()).file_uris()
-    assert len(parts) == 2
+    assert len(parts) == 1
     assert {row["_x_prc_idx"] for row in read_rows(first)} == {0, 1}
 
     process_index = 0

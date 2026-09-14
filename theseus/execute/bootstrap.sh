@@ -552,6 +552,13 @@ if grep -Eq \
             "${NONCE}-${probe_id}-autobatch-${candidate}"
 
         echo "[bootstrap] probing training.per_device_batch_size=$candidate"
+        # Create the buffer before polling, and keep the writer PID so a
+        # fast-failing probe cannot be classified before its output drains.
+        : > "$probe_log"
+        probe_pipe="$BOOTSTRAP_STAGING/autobatch-${candidate}.fifo"
+        mkfifo "$probe_pipe"
+        tee "$probe_log" < "$probe_pipe" &
+        probe_log_sink_pid=$!
         set +e
         # The probe tee keeps a classification buffer; its stdout still
         # flows through the outer tee into the durable cluster log.
@@ -560,7 +567,7 @@ if grep -Eq \
             uv run --no-sync python -m theseus.execute.run "$probe_spec" \
                 "training.per_device_batch_size=$candidate" \
                 "${probe_overrides[@]}" \
-            > >(tee "$probe_log") 2>&1 &
+            > "$probe_pipe" 2>&1 &
         MAIN_CHILD_PID=$!
         probe_completed=0
         while kill -0 "$MAIN_CHILD_PID" 2>/dev/null; do
@@ -574,8 +581,15 @@ if grep -Eq \
         wait "$MAIN_CHILD_PID"
         probe_exit_code=$?
         MAIN_CHILD_PID=""
+        wait "$probe_log_sink_pid"
+        probe_log_exit_code=$?
         set -e
+        rm -f "$probe_pipe"
 
+        if [[ "$probe_log_exit_code" -ne 0 ]]; then
+            echo "[bootstrap] ERROR: autobatch log sink failed with exit $probe_log_exit_code"
+            exit "$probe_log_exit_code"
+        fi
         if [[ "$probe_exit_code" -eq 0 || "$probe_completed" -eq 1 ]]; then
             batch_size_override="training.per_device_batch_size=$candidate"
             break

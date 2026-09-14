@@ -14,6 +14,7 @@ from theseus.cli.configure import configure
 from theseus.cli.submit import submit
 from theseus.cli.run import run
 from theseus.cli.jobs import jobs
+from theseus.cli.cleanup import cleanup
 
 
 app = typer.Typer(name="theseus", no_args_is_help=True)
@@ -22,6 +23,7 @@ app.command()(configure)
 app.command()(submit)
 app.command()(run)
 app.command()(jobs)
+app.command()(cleanup)
 
 
 @app.callback()
@@ -42,7 +44,7 @@ def main(
     """Run and inspect Theseus workloads."""
     logger.remove()
     logger.add(
-        lambda message: sys.stderr.write(message),
+        sys.stderr,
         level="DEBUG" if verbose else "INFO",
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
         backtrace=False,

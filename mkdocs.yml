@@ -97,6 +97,8 @@ nav:
         - Dataset: How-to/adding/components/dataset.md
         - Evaluation: How-to/adding/components/evaluation.md
         - Analysis Job: How-to/adding/components/analysis-job.md
+        - Optimizer: How-to/adding/components/optimizer.md
+        - Learning Rate Schedule: How-to/adding/components/schedule.md
       - Extending Components:
         - Overview: How-to/adding/extending/index.md
         - Trainer: How-to/adding/extending/trainer.md

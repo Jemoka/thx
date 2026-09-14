@@ -24,11 +24,11 @@ def cleanup(
     values = root / "objects" / "values"
     if expire:
         logger.warning(
-            "CLEANUP | --expire PERMANENTLY DELETES obsolete and unreferenced files "
-            "without retention. Active readers may fail; concurrent writers may lose "
-            "uncommitted files. Old table snapshots may become unreadable. "
-            "Active readers/writers are not detected. Press Ctrl-C within 10 seconds "
-            "to cancel if any are running."
+            "ALL ACTIVE WRITERS WILL CRASH IN 10 SECONDS, C-c ONCE TO CANCEL"
+        )
+        logger.info(
+            "--expire deletes obsolete and uncommitted files without retention; "
+            "active readers and writers may fail."
         )
         sleep(10)
     try:

@@ -50,7 +50,7 @@ def test_cleanup_compacts_and_vacuums_with_selected_retention(tmp_path, monkeypa
     assert len(DeltaTable(values).file_uris()) == 1
     if expire:
         delay.assert_called_once_with(10)
-        assert "PERMANENTLY DELETES" in result.output
+        assert "ALL ACTIVE WRITERS WILL CRASH IN 10 SECONDS, C-c ONCE TO CANCEL" in result.output
         assert all(not os.path.exists(path) for path in old_files)
     else:
         delay.assert_not_called()
@@ -71,7 +71,7 @@ def test_cleanup_expire_can_be_cancelled_before_mutation(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["cleanup", str(tmp_path), "--expire"])
 
     assert result.exit_code != 0
-    assert "Press Ctrl-C within 10 seconds" in result.output
+    assert "ALL ACTIVE WRITERS WILL CRASH IN 10 SECONDS, C-c ONCE TO CANCEL" in result.output
     delay.assert_called_once_with(10)
     compact.assert_not_called()
     vacuum.assert_not_called()

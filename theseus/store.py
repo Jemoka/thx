@@ -37,6 +37,7 @@ import pyarrow as pa
 from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import CommitFailedError, TableNotFoundError
 from flax import serialization
+from loguru import logger
 
 from theseus.base import JobSpec, Node, PyTree
 from theseus.base.hardware import HardwareResult, local as local_hardware
@@ -204,6 +205,24 @@ class ObjectReader:
         ]
 
 
+def compact_values(values: str | Path) -> dict[str, Any] | None:
+    """Compact a value table, reloading after concurrent commit conflicts.
+
+    An absent table is a no-op. Obsolete files remain available to readers
+    until an explicit vacuum removes them after the retention period.
+    """
+    for attempt in range(_DELTA_IO_ATTEMPTS):
+        try:
+            return ObjectReader._retry_io(lambda: DeltaTable(values).optimize.compact())
+        except TableNotFoundError:
+            return None
+        except CommitFailedError:
+            if attempt + 1 == _DELTA_IO_ATTEMPTS:
+                raise
+            sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
+    raise AssertionError("unreachable")
+
+
 class ObjectStore(ObjectReader):
     """Store blobs and scalar metadata associated with experiment DAG nodes.
 
@@ -249,9 +268,11 @@ class ObjectStore(ObjectReader):
         return cls(local_hardware(str(root_dir), "-"))
 
     def close(self) -> None:
-        """Commit queued values and stop the writer without rewriting files.
+        """Commit queued values, stop the writer, and compact the value table.
 
         A successfully closed store may be restarted with :meth:`start`.
+        Compaction failures are logged without failing committed writes.
+        Closing never vacuums files needed by existing readers.
 
         Raises:
             RuntimeError: If the background writer failed while producing a
@@ -265,6 +286,12 @@ class ObjectStore(ObjectReader):
         self.thread = None
 
         self._raise_writer_error()
+        try:
+            compact_values(self.values())
+        except Exception as error:
+            logger.warning(
+                "STORE | value compaction failed for {}: {}", self.values(), error
+            )
 
     #### public writes ####
 

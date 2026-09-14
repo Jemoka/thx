@@ -25,6 +25,7 @@ from typing import (
     Mapping,
     Self,
     Sequence,
+    TypeVar,
     cast,
     overload,
 )
@@ -47,6 +48,7 @@ _VALUE_BATCH_SIZE = 4096
 _VALUE_FLUSH_SECONDS = 30.0
 _DELTA_IO_ATTEMPTS = 3
 _DELTA_IO_RETRY_SECONDS = 0.25
+_IOResult = TypeVar("_IOResult")
 _chdb_query = cast(Callable[..., pa.Table], chdb.query)
 _METADATA_TYPES: dict[str, pa.DataType] = {
     "_x_blob": pa.string(),
@@ -154,7 +156,7 @@ class ObjectReader:
         )
 
     @staticmethod
-    def _retry_io(operation: Callable[[], Any]) -> Any:
+    def _retry_io(operation: Callable[[], _IOResult]) -> _IOResult:
         for attempt in range(_DELTA_IO_ATTEMPTS):
             try:
                 return operation()
@@ -213,7 +215,10 @@ def compact_values(values: str | Path) -> dict[str, Any] | None:
     """
     for attempt in range(_DELTA_IO_ATTEMPTS):
         try:
-            return ObjectReader._retry_io(lambda: DeltaTable(values).optimize.compact())
+            return cast(
+                dict[str, Any],
+                ObjectReader._retry_io(lambda: DeltaTable(values).optimize.compact()),
+            )
         except TableNotFoundError:
             return None
         except CommitFailedError:

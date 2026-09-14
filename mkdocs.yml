@@ -106,7 +106,6 @@ nav:
         - Attention: How-to/adding/extending/attention.md
         - MLP: How-to/adding/extending/mlp.md
         - Mixture of Experts: How-to/adding/extending/moe.md
-    - Disclosing Code: How-to/disclosure.md
   - Design:
     - Overview: Design/index.md
     - Sharp Edges: Design/sharp.md

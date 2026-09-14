@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+      dry_run:
+        description: Build and validate without pushing or publishing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  quality-gate:
+    if: github.repository == 'Jemoka/thx' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install dependencies
+        run: uv sync --locked --no-default-groups --group dev
+      - name: Run pre-commit hooks
+        run: uv run --no-sync pre-commit run --all-files
+
+  release:
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Determine next version
+        id: next
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, tomllib, urllib.request
+          from pathlib import Path
+          project = tomllib.loads(Path('pyproject.toml').read_text())['project']
+          versions = [project['version']]
+          previous = subprocess.run(['git', 'show', 'origin/release:pyproject.toml'], capture_output=True, text=True)
+          if previous.returncode == 0:
+              versions.append(tomllib.loads(previous.stdout)['project']['version'])
+          # Keep versioning continuous when moving the publisher to this repo.
+          with urllib.request.urlopen('https://pypi.org/pypi/' + project['name'] + '/json') as response:
+              versions.append(json.load(response)['info']['version'])
+          major, minor, patch = max(tuple(map(int, version.split('.'))) for version in versions)
+          bump = os.environ['BUMP']
+          if bump == 'major':
+              major, minor, patch = major + 1, 0, 0
+          elif bump == 'minor':
+              minor, patch = minor + 1, 0
+          elif bump == 'patch':
+              patch += 1
+          else:
+              raise ValueError('Unknown version bump')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'version={major}.{minor}.{patch}', file=output)
+          PY
+      - name: Prepare release snapshot
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          if git show-ref --verify --quiet refs/remotes/origin/release; then
+            git checkout -B release origin/release
+            # Replace the tree, including removing files deleted from master.
+            git read-tree --reset -u "$GITHUB_SHA"
+          else
+            git checkout -b release "$GITHUB_SHA"
+          fi
+          uv version "$VERSION" --no-sync
+      - name: Build distributions
+        run: uv build --no-sources
+      - name: Validate package metadata
+        run: uvx --from twine twine check dist/*
+      - name: Verify publishing credential is configured
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: test -n "$PYPI_TOKEN"
+      - name: Commit and tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          git add pyproject.toml uv.lock
+          git commit -m "release: v$VERSION"
+          git tag "v$VERSION"
+          git push --atomic origin release "v$VERSION"
+      - name: Publish to PyPI
+        if: ${{ !inputs.dry_run }}
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/* --verify-tag \
+            --title "v$VERSION" --generate-notes
+      - name: Upload dry-run distributions
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-preview
+          path: dist/*
+          retention-days: 3

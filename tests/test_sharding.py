@@ -324,7 +324,7 @@ def test_validation_uses_trainer_sharding_context(trainer_factory, policy):
         data_sharding = NamedSharding(current.mesh, P(None, Axis.BATCH, None))
         batch = jax.device_put(host, data_sharding)
         validate = jax.jit(
-            partial(current.val_step, sharding=current.sharding_context),
+            partial(current.val_step, sharding=current.sharding_context, fsdp=current.spec.topology.shard.fsdp),
             in_shardings=(current.state_sharding, data_sharding),
         )
         compiled = validate.lower(current.state, batch).compile()

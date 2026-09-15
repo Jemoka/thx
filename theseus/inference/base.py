@@ -516,6 +516,11 @@ class InferenceJob(CheckpointedJob[C], LoggingJob[C], Generic[C, M]):
             key: Any,
         ) -> Any:
             def decode_step(carry: Any, step: Any) -> tuple[Any, None]:
+                params = state.params
+                assert self.spec.topology is not None
+                if self.spec.topology.shard.fsdp:
+                    # Keep gathered weights inside this decode iteration.
+                    params, carry = jax.lax.optimization_barrier((params, carry))  # type: ignore[no-untyped-call]
                 cache_state, last_tok, out, offset, key = carry
                 token_input = last_tok[:, None]  # (B, 1)
                 del step
@@ -526,7 +531,7 @@ class InferenceJob(CheckpointedJob[C], LoggingJob[C], Generic[C, M]):
                 ):
                     (logits, _, _), new_cache = forward_fn(
                         state,
-                        state.params,
+                        params,
                         (token_input, None, None),  # type: ignore[arg-type]
                         deterministic=True,
                         mutable=("cache",),
@@ -587,10 +592,17 @@ class InferenceJob(CheckpointedJob[C], LoggingJob[C], Generic[C, M]):
             key: Any,
         ) -> Any:
             def generate_one(carry: Any, batch: Any) -> tuple[Any, Any]:
+                params = state.params
+                assert self.spec.topology is not None
+                if self.spec.topology.shard.fsdp:
+                    # Bound gathered-weight lifetime across rollout batches.
+                    params, carry, batch = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]
+                        (params, carry, batch)
+                    )
                 x_batch, mask_batch = batch
                 carry, batch_key = jax.random.split(carry)
                 results = self._autoregress(
-                    state,
+                    state.replace(params=params),
                     batch_key,
                     x_batch,
                     mask_batch,

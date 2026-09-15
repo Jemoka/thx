@@ -793,6 +793,7 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
         batch: PyTree[jax.Array],  # (S, B, T) each
         *,
         sharding: ParameterShardingContext,
+        fsdp: bool = False,
     ) -> Tuple[jax.Array, jax.Array, Any]:
         """Compute validation loss over S micro-batches.
 
@@ -811,13 +812,17 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
         ) -> Tuple[Tuple[jax.Array, jax.Array], Any]:
             from typing import cast as type_cast
 
+            params = state.params
+            if fsdp:
+                # Keep gathered weights inside this validation microbatch.
+                params, carry, xb_item = jax.lax.optimization_barrier(  # type: ignore[no-untyped-call]
+                    (params, carry, xb_item)
+                )
             loss_sum, count = carry
 
             # Cast to PyTree for forward call
             xb_pytree: PyTree[jax.Array] = type_cast(PyTree[jax.Array], xb_item)
-            params_pytree: PyTree[jax.Array] = type_cast(
-                PyTree[jax.Array], state.params
-            )
+            params_pytree: PyTree[jax.Array] = type_cast(PyTree[jax.Array], params)
             with (
                 jax.sharding.use_abstract_mesh(sharding.mesh.abstract_mesh),
                 flax.linen.logical_axis_rules(sharding.parameter_fwdbwd_mapping),
@@ -857,8 +862,13 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
         batch = self._to_global(self._reshape_batch(self.batch("val")))
         data_shard = NamedSharding(self.mesh, P(None, Axis.BATCH, None))  # type: ignore
 
+        assert self.spec.topology is not None
         valid_step_inner_jit = jax.jit(
-            partial(self.val_step, sharding=self.sharding_context),
+            partial(
+                self.val_step,
+                sharding=self.sharding_context,
+                fsdp=self.spec.topology.shard.fsdp,
+            ),
             in_shardings=(self.state_sharding, data_shard),
             out_shardings=(None, None, None),
         )

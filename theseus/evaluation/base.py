@@ -435,7 +435,14 @@ class EncodingEvaluation(Evaluation):
             "_chunk_step called before __call__ set _evaluator_ref"
         )
 
+        assert inference.spec.topology is not None
+        fsdp = inference.spec.topology.shard.fsdp
+
         def reduce(_: Any, batch: Any) -> Any:
+            params = state.params
+            if fsdp:
+                # Keep gathered weights inside this batch iteration.
+                params, batch = jax.lax.optimization_barrier((params, batch))  # type: ignore[no-untyped-call]
             x_batch, mask_batch = batch
             with (
                 jax.sharding.use_abstract_mesh(inference.mesh.abstract_mesh),
@@ -443,7 +450,7 @@ class EncodingEvaluation(Evaluation):
             ):
                 logits, _, _ = inference.forward(
                     state,
-                    state.params,
+                    params,
                     (x_batch, None, mask_batch),
                     None,
                     deterministic=True,
@@ -653,7 +660,14 @@ class PerplexityEvaluation(Evaluation):
             "_chunk_step called before __call__ set _evaluator_ref"
         )
 
+        assert inference.spec.topology is not None
+        fsdp = inference.spec.topology.shard.fsdp
+
         def reduce(_: Any, batch: Any) -> Any:
+            params = state.params
+            if fsdp:
+                # Keep gathered weights inside this batch iteration.
+                params, batch = jax.lax.optimization_barrier((params, batch))  # type: ignore[no-untyped-call]
             x_batch, mask_batch = batch
 
             y_batch = jnp.roll(x_batch, -1, axis=-1)
@@ -666,7 +680,7 @@ class PerplexityEvaluation(Evaluation):
             ):
                 logits, _, _ = inference.forward(
                     state,
-                    state.params,
+                    params,
                     (x_batch, None, mask_batch),
                     None,
                     deterministic=True,
@@ -943,7 +957,14 @@ class PerplexityComparisonEvaluation(Evaluation):
             "_chunk_step called before __call__ set _evaluator_ref"
         )
 
+        assert inference.spec.topology is not None
+        fsdp = inference.spec.topology.shard.fsdp
+
         def reduce(_: Any, batch: Any) -> Any:
+            params = state.params
+            if fsdp:
+                # Keep gathered weights inside this batch iteration.
+                params, batch = jax.lax.optimization_barrier((params, batch))  # type: ignore[no-untyped-call]
             x_batch, mask_batch, prefix_len_batch = batch
 
             y_batch = jnp.roll(x_batch, -1, axis=-1)
@@ -966,7 +987,7 @@ class PerplexityComparisonEvaluation(Evaluation):
             ):
                 logits, _, _ = inference.forward(
                     state,
-                    state.params,
+                    params,
                     (x_batch, None, mask_batch),
                     None,
                     deterministic=True,

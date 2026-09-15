@@ -47,6 +47,7 @@ class DummyInference:
     def __init__(
         self, batch_unit: int = 8, block_size: int = 8, rollout_token: str = "!"
     ):
+        self.spec = SimpleNamespace(topology=SimpleNamespace(shard=SimpleNamespace(fsdp=False)))
         self.model = SimpleNamespace(sharding=ShardingPlan())
         self.replicas = 1
         self.local_replicas = 1

@@ -1,13 +1,12 @@
 """Data loading for statically declared dataset mixtures."""
 
 from dataclasses import dataclass
-from typing import Any, Literal, TYPE_CHECKING
-
-from enum import Enum
+from typing import Any, TYPE_CHECKING
 
 from theseus.base.job import ExecutionSpec
 from theseus.config import configure
 from theseus.data.datasets import DatasetComponent, DatasetConfig
+from theseus.data.style import DatasetStyle, DatasetStyleLike
 from .dataset import Dataset
 from .stream import batches
 from theseus.base import Node
@@ -18,35 +17,19 @@ from typing import Dict
 from .stream import AsyncStrategy as AsyncStrategy
 
 
-class DatasetStyle(Enum):
-    PADDED = "padded"
-    PMD = "pmd"
-    CONTRASTIVE = "contrastive"
-
-    @classmethod
-    def normalize(cls, style: "DatasetStyleLike") -> "DatasetStyle":
-        if isinstance(style, cls):
-            return style
-        style_lower = str(style).lower()
-        for option in cls:
-            if style_lower == option.value:
-                return option
-        raise ValueError(f"Unknown dataset style: {style}")
-
-
-DatasetStyleLike = DatasetStyle | Literal["padded", "pmd", "contrastive"]
-
-
 @dataclass
 class Sampling:
-    """Weight and reader style for one statically declared dataset."""
+    """Weight and optional reader style override for one dataset.
+
+    When style is None, Strategy uses the dataset class's STYLE declaration.
+    """
 
     dataset: type[DatasetComponent]
     rate: float
     if TYPE_CHECKING:
-        style: DatasetStyleLike = DatasetStyle.PADDED
+        style: DatasetStyleLike | None = None
     else:
-        style: Any = DatasetStyle.PADDED
+        style: Any = None
 
 
 class Strategy:
@@ -80,7 +63,17 @@ class Strategy:
         suffix = configure(DatasetConfig).suffix
         for sampling in mixture:
             ds: Dataset
-            style = DatasetStyle.normalize(sampling.style)
+            declared_style = (
+                sampling.dataset.STYLE if sampling.style is None else sampling.style
+            )
+            if declared_style is None:
+                raise ValueError(
+                    f"Dataset {sampling.dataset.__name__} has no STYLE; "
+                    "set Sampling(..., style=...) explicitly "
+                    "(choose 'padded', 'pmd', or 'contrastive') "
+                    "or declare STYLE on the dataset class."
+                )
+            style = DatasetStyle.normalize(declared_style)
             styles_lower.append(style.value)
 
             if style == DatasetStyle.PADDED:

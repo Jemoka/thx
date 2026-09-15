@@ -134,9 +134,28 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
         | Type[DatasetComponent]
         | List[Sampling | Type[DatasetComponent]],
     ) -> List[Sampling]:
+        """Preserve explicit rates; bare datasets equally share the remainder."""
         declared = datasets if isinstance(datasets, list) else [datasets]
+
+        accounted_fraction = sum(
+            dataset.rate for dataset in declared if isinstance(dataset, Sampling)
+        )
+        # Match Strategy's tolerance when explicit rates round above one.
+        if accounted_fraction - 1.0 >= 1e-6:
+            raise ValueError(
+                f"Explicit sampling rates exceed 1, got {accounted_fraction}"
+            )
+        accounted_count = sum(
+            1 for dataset in declared if isinstance(dataset, Sampling)
+        )
+        additional_fraction = max(0.0, 1.0 - accounted_fraction) / max(
+            1, len(declared) - accounted_count
+        )
+
         return [
-            dataset if isinstance(dataset, Sampling) else Sampling(dataset, rate=1.0)
+            dataset
+            if isinstance(dataset, Sampling)
+            else Sampling(dataset, rate=additional_fraction)
             for dataset in declared
         ]
 

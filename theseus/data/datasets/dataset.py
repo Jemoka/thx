@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field as dataclass_field
 
 from theseus.config import field
+from theseus.data.style import DatasetStyle
 
 
 C = TypeVar("C")
@@ -40,6 +41,7 @@ class DatasetComponent:
 
     DATASET_KEY: ClassVar[str]
     CONFIG: ClassVar[type[Any] | None] = None
+    STYLE: ClassVar[DatasetStyle | None] = None
 
     @classmethod
     def config(cls) -> list[type[Any]]:
@@ -57,6 +59,8 @@ class DatasetComponent:
 
 
 class Dataset(DatasetComponent, ABC, Generic[C]):
+    STYLE = DatasetStyle.PADDED
+
     @abstractmethod
     def __getitem__(self, indx: int) -> C: ...
 
@@ -74,13 +78,15 @@ class PretrainingDataset(StringDataset):
     Specifically, this dataset is tokenized irrespective of item boundaries.
     """
 
-    ...
+    STYLE = DatasetStyle.PMD
 
 
 ####### contrastive datasets #######
 
 
 class ContrastiveDataset(DatasetComponent, ABC, Generic[C]):
+    STYLE = DatasetStyle.CONTRASTIVE
+
     @abstractmethod
     def __getitem__(self, indx: int) -> Tuple[C, C]: ...
 
@@ -95,6 +101,8 @@ ContrastiveChatTemplateDataset = ContrastiveDataset[ChatTemplate]
 
 
 class StreamingDataset(DatasetComponent, ABC, Generic[C]):
+    STYLE = DatasetStyle.PADDED
+
     @abstractmethod
     def __iter__(self) -> Iterator[C]: ...
 
@@ -109,4 +117,4 @@ class StreamingPretrainingDataset(StreamingStringDataset):
     Specifically, this dataset is tokenized irrespective of item boundaries.
     """
 
-    ...
+    STYLE = DatasetStyle.PMD

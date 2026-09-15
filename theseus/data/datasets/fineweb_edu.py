@@ -2,6 +2,7 @@ from pathlib import Path
 
 from theseus.config import configure
 from theseus.data.datasets.dataset import DatasetComponent, DatasetConfig
+from theseus.data.style import DatasetStyle
 from theseus.registry import dataset
 
 
@@ -15,6 +16,8 @@ class FineWebEduDedup(DatasetComponent):
     ``val.bin``. Both files must be contiguous ``np.uint32`` token-id streams
     (``cl100k_base`` tokenization), matching the PMD loader format.
     """
+
+    STYLE = DatasetStyle.PMD
 
     def __init__(self) -> None:
         super().__init__()

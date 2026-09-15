@@ -83,6 +83,113 @@ def test_component_configs_are_aggregated() -> None:
     assert FineWeb.DATASET_KEY == "fineweb"
 
 
+@pytest.mark.parametrize(
+    ("rates", "implicit_count", "expected_rate"),
+    [
+        ([], 2, 0.5),
+        ([0.7], 2, 0.15),
+        ([1.0], 1, 0.0),
+        ([0.1, 0.2, 0.4, 0.2, 0.1], 1, 0.0),
+    ],
+)
+def test_normalize_ds_distributes_remaining_weight(
+    rates: list[float], implicit_count: int, expected_rate: float
+) -> None:
+    explicit = [Sampling(RawDataset, rate) for rate in rates]
+    result = BaseTrainer._normalize_ds(explicit + [RawDataset] * implicit_count)
+
+    assert all(actual is original for actual, original in zip(result, explicit))
+    implicit = result[len(explicit) :]
+    assert len(implicit) == implicit_count
+    assert [sample.rate for sample in implicit] == pytest.approx(
+        [expected_rate] * implicit_count
+    )
+    assert all(sample.rate >= 0 and sample.style is None for sample in implicit)
+
+
+@pytest.mark.parametrize("implicit_count", [0, 1])
+def test_normalize_ds_rejects_overallocation(implicit_count: int) -> None:
+    with pytest.raises(ValueError, match="Explicit sampling rates exceed 1"):
+        BaseTrainer._normalize_ds(
+            [Sampling(RawDataset, 1.2)] + [RawDataset] * implicit_count
+        )
+
+
+@pytest.mark.parametrize(
+    ("dataset_name", "reader_module", "reader_name"),
+    [
+        ("Dataset", "padded", "PaddedDataset"),
+        ("StreamingDataset", "padded", "PaddedDataset"),
+        ("PretrainingDataset", "pmd", "MemmapDataset"),
+        ("StreamingPretrainingDataset", "pmd", "MemmapDataset"),
+        ("ContrastiveDataset", "contrastive", "ContrastivePaddedDataset"),
+        ("FineWeb", "pmd", "MemmapDataset"),
+        ("FineWebEduDedup", "pmd", "MemmapDataset"),
+    ],
+)
+def test_sampling_infers_dataset_reader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dataset_name: str,
+    reader_module: str,
+    reader_name: str,
+) -> None:
+    from unittest.mock import Mock
+    from theseus.data import datasets
+
+    dataset = type(
+        "LocalDataset", (getattr(datasets, dataset_name),), {"DATASET_KEY": "local"}
+    )
+    reader = Mock()
+    monkeypatch.setattr(
+        f"theseus.training.flywheel.{reader_module}.{reader_name}", reader
+    )
+    spec = ExecutionSpec.local(str(tmp_path))
+    sampling = Sampling(dataset, 1.0)
+
+    assert sampling.style is None
+    with configuration(build(DatasetConfig)):
+        strategy = Strategy(spec, 8, [sampling])
+
+    reader.assert_called_once_with(spec, 8, "local", "")
+    assert strategy.datasets == [reader.return_value]
+
+
+@pytest.mark.parametrize("declared_style", [None, DatasetStyle.PMD])
+def test_sampling_explicit_style_overrides_dataset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, declared_style: DatasetStyle | None
+) -> None:
+    from unittest.mock import Mock
+    from theseus.data.datasets import DatasetComponent
+
+    class LocalDataset(DatasetComponent):
+        DATASET_KEY = "local"
+        STYLE = declared_style
+
+    reader = Mock()
+    monkeypatch.setattr("theseus.training.flywheel.padded.PaddedDataset", reader)
+    spec = ExecutionSpec.local(str(tmp_path))
+    with configuration(build(DatasetConfig)):
+        Strategy(spec, 8, [Sampling(LocalDataset, 1.0, "padded")])
+
+    reader.assert_called_once_with(spec, 8, "local", "")
+
+
+def test_sampling_requires_style_for_unknown_dataset(tmp_path: Path) -> None:
+    from theseus.data.datasets import DatasetComponent
+
+    class UnknownDataset(DatasetComponent):
+        DATASET_KEY = "unknown"
+
+    with configuration(build(DatasetConfig)):
+        with pytest.raises(
+            ValueError, match="UnknownDataset has no STYLE; set Sampling"
+        ):
+            Strategy(
+                ExecutionSpec.local(str(tmp_path)), 8, [Sampling(UnknownDataset, 1.0)]
+            )
+
+
 def test_evaluation_config_is_aggregated_and_hydrated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -266,3 +373,5 @@ def test_mapping_config_fields_preserve_values_and_typed_overrides():
     assert args.seed == changed.seed == 10
     assert changed.counts == {"train": 2}
     assert config.data.task.samples.train == 8
+
+

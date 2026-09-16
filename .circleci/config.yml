@@ -31,8 +31,9 @@ jobs:
               ((.forceRerun // false) | type == "boolean")
             ' /tmp/gerrit-event.json > /dev/null
             # Replay the webhook with forceRerun: true to deliberately retest.
+            # IDs must stay strings: CircleCI renders large numeric env values in scientific notation.
             jq '{revision: .patchSet.revision, refspec: .patchSet.ref,
-                 change: .change.number, patchset: .patchSet.number,
+                 change: (.change.number | tostring), patchset: (.patchSet.number | tostring),
                  rerun: (.forceRerun // false)}' \
               /tmp/gerrit-event.json > /tmp/gerrit-parameters.json
       - checkout

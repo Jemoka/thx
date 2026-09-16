@@ -8,11 +8,11 @@ parameters:
     type: string
     default: ""
   change:
-    type: integer
-    default: 0
+    type: string
+    default: ""
   patchset:
-    type: integer
-    default: 0
+    type: string
+    default: ""
   rerun:
     type: boolean
     default: false

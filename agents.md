@@ -20,3 +20,14 @@ After writing I want you to be one of those JR rail operators that points to eac
 In addition to the point-and-call above, EVERY change should consider whether the change is a *experiment* or *infrastructure*. IN GENERAL, experiments should be private and infrastructure should be public unless the user says otherwise. To delineate these public/private boundaries, read once `disclosure.md` in the docs and audit your hunk changes against it.
 
 You should also run pre-commit hooks by actually running `uv pre-commit` (e.g., don't directly invoke mypy/ruff etc.) since the repository has custom settings.
+
+
+## Branch Semantics
+Ideally, branch names on GitHub should be kept clean. We use the following semantics:
+
+- `bets/*`: scientific wagers, unrelated to infrastructure
+- `feat/*`: Theseus feature
+- `patch/*`: Theseus big fixes
+
+Branches can arbitrarily stack. 
+

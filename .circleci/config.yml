@@ -1,0 +1,46 @@
+version: 2.1
+setup: true
+
+orbs:
+  continuation: circleci/continuation@1.1.0
+
+jobs:
+  prepare-gerrit:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    environment:
+      GERRIT_EVENT: << pipeline.trigger_parameters.webhook.body >>
+    steps:
+      - run:
+          name: Read Gerrit event
+          command: |
+            printf '%s\n' "$GERRIT_EVENT" > /tmp/gerrit-event.json
+            jq . /tmp/gerrit-event.json
+            if ! jq -e '.type == "patchset-created"' /tmp/gerrit-event.json > /dev/null; then
+              echo "No patch set to test."
+              circleci-agent step halt
+              exit 0
+            fi
+            jq -e '
+              .change.project == "Jemoka/theseus" and
+              (.patchSet.revision | test("^[0-9a-f]{40}$")) and
+              (.patchSet.ref | test("^refs/changes/[0-9]{2}/[0-9]+/[0-9]+$")) and
+              (.change.number | type == "number" and . > 0 and . == floor) and
+              (.patchSet.number | type == "number" and . > 0 and . == floor) and
+              ((.forceRerun // false) | type == "boolean")
+            ' /tmp/gerrit-event.json > /dev/null
+            # Replay the webhook with forceRerun: true to deliberately retest.
+            jq '{revision: .patchSet.revision, refspec: .patchSet.ref,
+                 change: .change.number, patchset: .patchSet.number,
+                 rerun: (.forceRerun // false)}' \
+              /tmp/gerrit-event.json > /tmp/gerrit-parameters.json
+      - checkout
+      - continuation/continue:
+          configuration_path: .circleci/gerrit.yml
+          parameters: /tmp/gerrit-parameters.json
+
+workflows:
+  prepare:
+    jobs:
+      - prepare-gerrit

@@ -37,14 +37,18 @@ jobs:
               exit 0
             fi
 
-            account=$(curl --fail --silent --show-error \
+            echo "Resolving the Gerrit CI account."
+            curl --fail-with-body --silent --show-error \
               --user "$GERRIT_USER:$GERRIT_HTTP_PASSWORD" \
               https://review.gerrithub.io/a/accounts/self \
-              | sed '1d' | jq -er '._account_id | numbers')
-            curl --fail --silent --show-error \
+              > /tmp/gerrit-account.json || { cat /tmp/gerrit-account.json; exit 1; }
+            account=$(sed '1d' /tmp/gerrit-account.json | jq -er '._account_id | numbers')
+            echo "Checking change $GERRIT_CHANGE, patch set $GERRIT_PATCHSET as account $account."
+            curl --fail-with-body --silent --show-error \
               --user "$GERRIT_USER:$GERRIT_HTTP_PASSWORD" \
               "https://review.gerrithub.io/a/changes/${GERRIT_CHANGE}/messages" \
-              | sed '1d' > /tmp/gerrit-messages.json
+              > /tmp/gerrit-messages-response.json || { cat /tmp/gerrit-messages-response.json; exit 1; }
+            sed '1d' /tmp/gerrit-messages-response.json > /tmp/gerrit-messages.json
             completed=$(jq -r --argjson account "$account" \
               --argjson patchset "$GERRIT_PATCHSET" '
                 any(.[];

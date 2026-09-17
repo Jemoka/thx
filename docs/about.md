@@ -1,8 +1,7 @@
 # legalesemo
 
-[Houjun Liu](https://github.com/Jemoka) leads theseus with additional contributions from
-[Pratyusha Sharma](https://github.com/pratyushasharma),
-[Kaden Zheng](https://github.com/KadenZheng), and
+[Houjun Liu](https://github.com/Jemoka) leads theseus which is co-maintained by [Kaden Zheng](https://github.com/KadenZheng),  with additional contributions from
+[Pratyusha Sharma](https://github.com/pratyushasharma) and
 [Tianle Yu](https://github.com/yuxiaolejs).
 
 The source code, including code examples in the documentation, is licensed under the [MIT License](https://github.com/Jemoka/thx/blob/master/LICENSE). Unless otherwise noted, any documentation text

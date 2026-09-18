@@ -24,5 +24,15 @@ Sorry, its doing JIT compilation, then three runs of profiling-guided latency es
 
 If you are really worried `THESEUS_DISABLE_OPTIMIZATIONS=1` in `env:` section of your dispatch or locally can disable PGLE and expensive optimizations but then you are also sad because the later runs are a bit slow. ORRRR you can just disable PGLE only and see what that buys you, which is `JAX_ENABLE_PGLE=false`.
 
+## JAX can hang with GPUs showing 100% utilization.
+
+If a multi-GPU run stops making progress while GPU utilization remains at 100%, try setting `NCCL_P2P_DISABLE=1` in the training process's environment before starting the run:
+
+```bash
+export NCCL_P2P_DISABLE=1
+```
+
+This disables NCCL's direct GPU-to-GPU transport over NVLink or PCIe and may reduce communication performance. It's a workaround to try, we haven't tried it for every JAX hang!
+
 ## [yours here]
 Open an issue! There's more but I need to think of them.

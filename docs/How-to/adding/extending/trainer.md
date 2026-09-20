@@ -144,3 +144,21 @@ class DeterministicInspection(MyTrainer):
 For new model children, update the model's `components()` list; the trainer finds
 them through `MODEL.gather()`. Trainer declarations such as `EVALUATION` and
 `OPTIMIZER` contribute their schemas through `BaseTrainer.config()` instead.
+
+## Estimated training FLOPs
+
+`train/flops` records cumulative estimated training arithmetic alongside
+`train/tokens`, including the terminal validation event. Each completed update
+adds `global_batch * model.flops(context) + optimizer.flops_per_param * parameters`.
+The model contract already includes forward and backward work. Accumulation and
+replicas do not multiply the global estimate; optimizer work is counted once.
+
+This estimate excludes evaluation, communication, compilation, rematerialization,
+and operations omitted by a model's FLOP implementation. It does not require a
+known device peak (unlike MFU). If a model has no estimate, a warning identifies
+its fallback approximation of `6 * parameters * tokens`; unknown optimizer work
+is excluded with a warning. Checkpoint metadata preserves accumulated work across
+resumes and phase changes. Older checkpoints without this metadata use completed
+steps times the current per-step estimate, with a warning that the historical
+configuration is unknown. MFU setup remains in `run()` and refreshes only when
+the training state changes type.

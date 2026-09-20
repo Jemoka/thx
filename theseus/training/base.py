@@ -203,6 +203,9 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
         """
 
         self._profiler: Profiler | None = None
+        self._train_flops = 0.0
+        self._step_flops = 0.0
+        self._flops_restored = False
         super().__init__(spec, base=base)
         self._debug_config = copy.deepcopy(current_config())
         preview = spec.model_copy(update={"hardware": spec.hardware.redacted()})
@@ -505,6 +508,8 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
     def apply(self, state: PyTree[Any], metadata: Dict[str, Any]) -> None:
         """Install the restored state, including its completed optimizer step."""
         self._set_state(cast(train_state.TrainState, state))
+        self._flops_restored = "train/flops" in metadata
+        self._train_flops = float(metadata.get("train/flops", 0.0))
 
     def evaluator(self) -> Optional[Evaluator[M]]:
         """define what evaluator to use"""
@@ -959,14 +964,14 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
     #### training ####
 
     def mfu(self) -> None:
-        """Prepare theoretical compute seconds per update; None means unavailable."""
+        """Prepare estimated work per update, independently of hardware peak."""
         self._mfu_seconds: float | None = None
-        assert self.spec.topology is not None
-        topology = self.spec.topology
-        peak = getattr(topology.chip.flops, self.model.activation_dtype, None)
         overhead = self.OPTIMIZER.flops_per_param
-        if peak is None or overhead is None:
-            return
+        if overhead is None:
+            logger.warning(
+                "FLOPS | optimizer estimate unavailable; excluding optimizer work"
+            )
+            overhead = 0.0
 
         # LoRA stores the model's original variables separately from trainable params.
         params = getattr(self.state, "base_params", self.state.params)
@@ -974,8 +979,32 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
             model_flops = self.model.bind({"params": params}).flops(
                 self.args.block_size
             )
+        if not np.isfinite(model_flops) or model_flops <= 0:
+            logger.warning(
+                "FLOPS | model estimate unavailable; approximating with 6 * parameters * tokens"
+            )
+            model_flops = (
+                6
+                * sum(leaf.size for leaf in jax.tree.leaves(params))
+                * self.args.block_size
+            )
         nparams = sum(leaf.size for leaf in jax.tree.leaves(self.state.params))
         flops = model_flops * self.args.batch_size + overhead * nparams
+        self._step_flops = float(flops)
+        if not self._flops_restored:
+            self._train_flops = int(self.state.step) * self._step_flops
+            if int(self.state.step):
+                logger.warning(
+                    "FLOPS | checkpoint has no train/flops; estimating {} completed steps using the current model and batch configuration",
+                    int(self.state.step),
+                )
+            self._flops_restored = True
+
+        assert self.spec.topology is not None
+        topology = self.spec.topology
+        peak = getattr(topology.chip.flops, self.model.activation_dtype, None)
+        if peak is None or peak <= 0:
+            return
         # TPU v2/v3 expose two JAX devices per physical chip.
         chips = topology.device_count / (
             2 if topology.chip.name in {"tpu-v2", "tpu-v3"} else 1
@@ -1017,8 +1046,7 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
                 if self.args.validate:
                     valid_step = self._make_valid_step()
                 state_type = type(self.state)
-                if report_time is not None:
-                    self.mfu()
+                self.mfu()
 
             self.dropout_key, subkey = jax_random.split(self.dropout_key)
             with (
@@ -1031,6 +1059,7 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
                     subkey,
                     self.accumulate_steps,
                 )
+            self._train_flops += self._step_flops
             if report_time is not None:
                 mfu_work = (
                     mfu_work + self._mfu_seconds
@@ -1063,6 +1092,7 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
                     train_metrics["train/tokens"] = (
                         step * self.args.batch_size * self.args.block_size
                     )
+                    train_metrics["train/flops"] = self._train_flops
                     train_metrics["train/loss"] = loss_val
                     train_metrics["train/grad_norm"] = float(jax.device_get(grad_norm))
                     train_meta_host = jax.device_get(train_meta)
@@ -1110,6 +1140,7 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
                 val_metrics["train/tokens"] = (
                     step * self.args.batch_size * self.args.block_size
                 )
+                val_metrics["train/flops"] = self._train_flops
                 if self.main_process():
                     self.log(val_metrics)
                     logger.info("VAL | {}", step)
@@ -1130,7 +1161,7 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
     def checkpoint(self) -> None:
         """Save the current training state, including its optimizer step."""
 
-        super().save(self.state, {})
+        super().save(self.state, {"train/flops": self._train_flops})
 
         if self.main_process():
             self.log({"checkpoint": 1})
@@ -1145,6 +1176,6 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
     def run(self) -> None:
         """main entry point to run training, called on all nodes"""
         super().run()
-        self._mfu_started = time.perf_counter()
         self.mfu()
+        self._mfu_started = time.perf_counter()
         self.train()

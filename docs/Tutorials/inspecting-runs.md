@@ -354,7 +354,7 @@ with quick("/Users/houjun/theseus") as q:
     )
 
     trainer = q.build().create()
-    layer, inputs = trainer.debug()
+    layer, inputs = trainer.debug(("blocks_2", "mlp"))
     print(inputs.x) # <- the actual argument name to the __call__ function
     layer.close() # <- free temporaries
 ```

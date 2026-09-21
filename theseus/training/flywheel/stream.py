@@ -51,7 +51,7 @@ def batches(
     position = (start * hosts + rank) * batch_size
     plan_number = -1
     membership = np.empty(0, dtype=np.int64)
-    locations: list[np.ndarray] = []
+    location_segments: list[tuple[int, np.ndarray] | None] = [None] * len(datasets)
     while True:
         parts: list[dict[str, np.ndarray]] = []
         cursor = position
@@ -65,16 +65,6 @@ def batches(
                     if len(datasets) > 1
                     else np.zeros(plan_size, dtype=np.int8)
                 )
-                locations = [
-                    dataset._plan(
-                        split,
-                        np.random.default_rng(
-                            [seed, int(split != "train"), number, index + 1]
-                        ),
-                        plan_size,
-                    )
-                    for index, dataset in enumerate(datasets)
-                ]
                 plan_number = number
             count = min(remaining, plan_size - offset)
             chosen = membership[offset : offset + count]
@@ -83,11 +73,31 @@ def batches(
                 slots = np.flatnonzero(chosen == index) if len(datasets) > 1 else None
                 if slots is not None and not len(slots):
                     continue
-                indices = (
-                    locations[index][offset : offset + count]
-                    if slots is None
-                    else locations[index][offset + slots]
-                )
+                planned = np.empty(count, dtype=np.int64)
+                planned_position = cursor
+                planned_count = 0
+                while planned_count < count:
+                    cached = location_segments[index]
+                    if cached is None or not (
+                        cached[0] <= planned_position < cached[0] + len(cached[1])
+                    ):
+                        cached = dataset._plan_segment(
+                            split,
+                            seed,
+                            index,
+                            planned_position,
+                            plan_size,
+                        )
+                        location_segments[index] = cached
+                    segment_start, segment = cached
+                    segment_offset = planned_position - segment_start
+                    take = min(count - planned_count, len(segment) - segment_offset)
+                    planned[planned_count : planned_count + take] = segment[
+                        segment_offset : segment_offset + take
+                    ]
+                    planned_position += take
+                    planned_count += take
+                indices = planned if slots is None else planned[slots]
                 values = dataset._read(
                     indices,
                     split,

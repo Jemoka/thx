@@ -126,8 +126,9 @@ def test_padded_masks_and_contrastive_replay(sources):
             np.testing.assert_array_equal(left[key], right[key])
 
 
-def test_host_slices_match_global_stream(sources, monkeypatch):
-    strategy = Strategy(sources, 8, [Sampling(A, 1, "padded")])
+@pytest.mark.parametrize("style", ["pmd", "padded"])
+def test_host_slices_match_global_stream(sources, monkeypatch, style):
+    strategy = Strategy(sources, 8, [Sampling(A, 1, style)])
     monkeypatch.setattr(stream.jax, "process_count", lambda: 1)
     monkeypatch.setattr(stream.jax, "process_index", lambda: 0)
     global_batches = list(next_batch for _, next_batch in zip(range(5), stream.batches(strategy.datasets, [1], 14)))

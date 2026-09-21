@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from theseus.training.flywheel import pmd
+from theseus.training.flywheel import pmd, stream
 from theseus.training.flywheel.padded import PaddedDataset
 from theseus.training.flywheel.contrastive import ContrastivePaddedDataset
 
@@ -69,6 +69,95 @@ def test_pmd_sparse_windows_and_spanning_blocks(tmp_path, monkeypatch, block_siz
         assert actual["padding_mask"].all()
         assert actual["x"].dtype == actual["y"].dtype == np.int64
         assert not np.shares_memory(actual["x"], actual["y"])
+
+
+def test_pmd_indexed_plan_uses_complete_physical_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(pmd, "BYTES_PER_BLOCK", 130)
+    monkeypatch.setattr(pmd, "BUFFER_BLOCKS", 1)
+    path = tmp_path / "data"
+    path.mkdir()
+    data = np.arange(10 * 8 + 1, dtype=np.uint32)
+    data.tofile(path / "train.bin")
+    reader = pmd.MemmapDataset(spec_at(tmp_path), 8, "data")
+
+    segments = [
+        reader._plan_segment("train", 6, 0, position, 7)
+        for position in (0, 4, 8, 10)
+    ]
+
+    assert reader._window_rows == 4  # floor(130 bytes / (4 bytes * 8 tokens))
+    assert [start for start, _ in segments] == [0, 4, 8, 10]
+    assert [set(indices) for _, indices in segments] == [
+        {0, 1, 2, 3},
+        {4, 5, 6, 7},
+        {8, 9},
+        {0, 1, 2, 3},
+    ]
+    indices = np.concatenate([segment for _, segment in segments[:3]])
+    actual = reader._read_rows(indices, "train")
+    samples = np.array([data[index * 8 : (index + 1) * 8 + 1] for index in indices])
+    np.testing.assert_array_equal(actual["x"], samples[:, :-1])
+    np.testing.assert_array_equal(actual["y"], samples[:, 1:])
+
+
+def test_pmd_stream_crosses_plan_boundary_and_epoch(tmp_path, monkeypatch):
+    monkeypatch.setattr(pmd, "BYTES_PER_BLOCK", 130)
+    monkeypatch.setattr(pmd, "BUFFER_BLOCKS", 1)
+    monkeypatch.setattr(stream, "PLAN_SAMPLES", 7)
+    path = tmp_path / "data"
+    path.mkdir()
+    data = np.arange(10 * 8 + 1, dtype=np.uint32) + 1
+    data.tofile(path / "train.bin")
+    readers = [pmd.MemmapDataset(spec_at(tmp_path), 8, "data") for _ in range(2)]
+
+    batches = [stream.batches([reader], [1], 5, seed=6) for reader in readers]
+    rows = []
+    for _ in range(4):
+        left, right = [next(batches[index])["x"] for index in range(2)]
+        np.testing.assert_array_equal(left, right)
+        rows.extend(((left[:, 0] - 1) // 8).tolist())
+
+    for start, expected in (
+        (0, {0, 1, 2, 3}),
+        (4, {4, 5, 6, 7}),
+        (8, {8, 9}),
+        (10, {0, 1, 2, 3}),
+        (14, {4, 5, 6, 7}),
+        (18, {8, 9}),
+    ):
+        assert set(rows[start : start + len(expected)]) == expected
+
+
+def test_pmd_direct_resume_plans_only_requested_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(pmd, "BYTES_PER_BLOCK", 130)
+    monkeypatch.setattr(pmd, "BUFFER_BLOCKS", 1)
+    monkeypatch.setattr(stream, "PLAN_SAMPLES", 7)
+    path = tmp_path / "data"
+    path.mkdir()
+    data = np.arange(10 * 8 + 1, dtype=np.uint32) + 1
+    data.tofile(path / "train.bin")
+    continuous = pmd.MemmapDataset(spec_at(tmp_path), 8, "data")
+    expected = stream.batches([continuous], [1], 1, seed=6)
+    resume_position = 17
+    for _ in range(resume_position):
+        next(expected)
+    expected_row = next(expected)["x"]
+
+    resumed = pmd.MemmapDataset(spec_at(tmp_path), 8, "data")
+    positions = []
+    plan_segment = resumed._plan_segment
+
+    def record_segment(split, seed, dataset_index, position, period):
+        positions.append(position)
+        return plan_segment(split, seed, dataset_index, position, period)
+
+    monkeypatch.setattr(resumed, "_plan_segment", record_segment)
+    actual = next(
+        stream.batches([resumed], [1], 1, seed=6, start=resume_position)
+    )["x"]
+
+    assert positions == [resume_position]
+    np.testing.assert_array_equal(actual, expected_row)
 
 
 def test_pmd_reads_only_needed_blocks_and_reuses_them(tmp_path, monkeypatch):

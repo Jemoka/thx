@@ -6,12 +6,18 @@ reordered; returned samples are restored to their original positions.
 
 ## Reading strategy
 
-PMD still samples a size-weighted contiguous window of at most 256 MiB. It now
-allocates that buffer without reading it all immediately. Only 4 MiB blocks
-touched by requested samples and their shifted labels are filled, using a
-process-wide pool of eight I/O workers. Loaded blocks stay in the window cache.
-A cached strided view replaces per-sample Python slicing and stacking. The
-window, its tail, and the permutation are unchanged.
+PMD's location plan walks contiguous physical windows of at most 256 MiB in
+file order. In a single-source stream, each epoch shuffles every window once,
+consumes its complete permutation and the short final window, and then wraps to
+a newly shuffled first window. Weighted mixtures retain their existing
+membership filter over these planned locations. A global sample position
+directly identifies its epoch, window, and permutation offset, so resume does
+not replay earlier windows and fixed planning boundaries cannot discard a
+window suffix. The reader allocates a window buffer without reading it all
+immediately. Only 4 MiB blocks touched by requested samples and their shifted
+labels are filled, using a process-wide pool of eight I/O workers. Loaded blocks
+stay in the window cache, and a cached strided view replaces per-sample Python
+slicing and stacking.
 
 Padded and contrastive readers start with direct mapped indexing. After a slow
 read (over 10 ms), they try parallel positional reads. Sorted rows are grouped

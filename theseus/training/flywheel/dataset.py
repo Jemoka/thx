@@ -17,7 +17,24 @@ class Dataset(ABC):
     def _read_rows(self, indices: np.ndarray, split: str) -> dict[str, np.ndarray]: ...
 
     def _plan(self, split: str, rng: np.random.Generator, count: int) -> np.ndarray:
+        """Sample replacement rows for invalid examples."""
         return rng.integers(self._size(split), size=count)
+
+    def _plan_segment(
+        self,
+        split: str,
+        seed: int,
+        dataset_index: int,
+        position: int,
+        period: int,
+    ) -> tuple[int, np.ndarray]:
+        """Return the deterministic location-plan segment containing position."""
+        number = position // period
+        start = number * period
+        rng = np.random.default_rng(
+            [seed, int(split != "train"), number, dataset_index + 1]
+        )
+        return start, self._plan(split, rng, period)
 
     def _read(
         self,

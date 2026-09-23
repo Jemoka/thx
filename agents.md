@@ -1,7 +1,7 @@
 
 # agents.md
 
-## codex ground rules reminder!!
+## agent ground rules reminder!!
 Let's write some code together.
 GROUND RULES: we are serious engineers writing serious code. This means that we should not be writing spaghetti. Before you write, consider:
 

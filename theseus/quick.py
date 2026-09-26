@@ -57,12 +57,14 @@ Selection and lifecycle:
     Queries default to ascending sequence order; branch()/resume() take the last
     match (highest seq). Use latest() for the most recently written checkpoint,
     or sort(...) to override the order. branch()/resume()
-    replace q.config with its saved configuration. Missing saved config raises
+    merge saved configuration into q.config, overriding overlaps while keeping
+    extra keys. Missing saved config raises
     immediately, leaving the previous selection/config intact. Select before
     create(), and make config edits AFTER selection, before job construction.
 
-    build(job, name) configures a fresh session and clears base/resume selection.
-    To use an explicit class with a checkpoint, build it first, then select.
+    build(job, name) preserves base/resume selection and existing config values,
+    adding the class's missing defaults. Explicit config overrides take precedence.
+    An explicit class can be built before or after checkpoint selection.
     build(job=None) requires a selected node and calls RestoreableJob.from_node
     with q.config plus any explicit config overrides. Resume restores saved job
     identity; branch accepts a new name/project/group (default name: "local").
@@ -73,7 +75,7 @@ Selection and lifecycle:
     subsequent setup calls preserve prepared state.
     Config edits after construction do
     not reconfigure the instance. Repeating identical build() arguments preserves
-    the session; changed arguments replace it.
+    the instance; changed arguments finish it while preserving selection/config.
 
     q.shard(tp=2, fsdp=False, zero=True) configures the next job before create().
 
@@ -88,8 +90,9 @@ Selection and lifecycle:
         # uv run theseus submit experiment train.yaml
 
     init(root) opens the same session without a context manager; call close()
-    afterward. close() finishes the live job and restores the prior config
-    context. Root defaults to $THESEUS_ROOT or ".". Queries need no active job.
+    afterward. close() finishes the live job, clears selection/config/sharding,
+    and restores the prior config context. Root defaults to $THESEUS_ROOT or ".".
+    Queries need no active job.
 """
 
 from __future__ import annotations
@@ -139,8 +142,9 @@ class QuickJob:
     ) -> QuickJob:
         """Configure a job; identical arguments preserve the active session.
 
-        New builds clear branch/resume selection but leave existing queries intact. Select a base
-        after building. Argument comparison uses a detached snapshot of supplied
+        Builds preserve selection, queries, and existing config values, adding
+        missing defaults. Explicit config overrides win. Argument comparison uses
+        a detached snapshot of supplied
         overrides, so editing ``q.config`` does not rebuild the job.
 
         Omit job after branch()/resume() to construct the saved job immediately.
@@ -174,17 +178,16 @@ class QuickJob:
                 shard=self._sharding,
             )
             runtime_cfg = OmegaConf.merge(
-                self.config, config if config is not None else {}
+                OmegaConf.to_container(self.config, resolve=False),
+                config if config is not None else {},
             )
             instance: RestoreableJob[Any]
             instance, cfg = RestoreableJob.from_node(
                 self.base, spec, runtime_cfg=runtime_cfg, resume=self._resume
             )
-            self.close()
+            self._replace_config(cfg)
             self._instance = instance
             self._job_cls = type(instance)
-            self._config = cfg
-            self._config_token = _current_config.set(cast(OmegaConf, cfg))
             self._build_args = args
             return self
 
@@ -216,21 +219,24 @@ class QuickJob:
                 *(components if isinstance(components, (list, tuple)) else [components])
             ),
         )
-        if config is not None:
-            with open_dict(cfg):
-                cfg = cast("DictConfig", OmegaConf.merge(cfg, config))
-            OmegaConf.set_struct(cfg, True)
+        with open_dict(cfg):
+            cfg = cast(
+                "DictConfig",
+                OmegaConf.merge(
+                    cfg,
+                    OmegaConf.to_container(self._config, resolve=False)
+                    if self._config is not None
+                    else {},
+                    config if config is not None else {},
+                ),
+            )
+        OmegaConf.set_struct(cfg, True)
 
-        self.close()
+        self._replace_config(cfg)
         self._job_cls = job_cls
         self._name = name
         self._project = project
         self._group = group
-        self._instance = None
-        self.base = None
-        self._resume = False
-        self._config = cfg
-        self._config_token = _current_config.set(cast(OmegaConf, cfg))
         self._build_args = args
         return self
 
@@ -243,17 +249,31 @@ class QuickJob:
             )
         return self._config
 
-    def close(self) -> None:
-        """Finish the active job's resources and restore the prior config context."""
+    def _replace_config(self, cfg: DictConfig) -> None:
+        """Release the previous instance and install config without resetting selection."""
+        if self._instance is not None:
+            self._instance.finish()
+            self._instance = None
         if self._config_token is not None:
-            try:
-                if self._instance is not None:
-                    self._instance.finish()
-            finally:
+            _current_config.reset(self._config_token)
+        self._config = cfg
+        self._config_token = _current_config.set(cast(OmegaConf, cfg))
+
+    def close(self) -> None:
+        """Finish the live job, reset the session, and restore the prior config context."""
+        try:
+            if self._instance is not None:
+                self._instance.finish()
+        finally:
+            if self._config_token is not None:
                 _current_config.reset(self._config_token)
-                self._config_token = None
-                self._config = None
-                self._build_args = None
+            self._config_token = None
+            self._config = None
+            self._build_args = None
+            self._instance = None
+            self.base = None
+            self._resume = False
+            self._sharding = ShardingPolicy()
 
     #### job execution ####
 
@@ -366,13 +386,17 @@ class QuickQuery(QueryBuilder):
         cfg = OmegaConf.load(blob / "config.yaml")
         if not isinstance(cfg, DictConfig):
             raise ValueError("Checkpoint configuration must be a mapping")
+        if self.quick_job._config is not None:
+            cfg = cast(
+                DictConfig,
+                OmegaConf.merge(
+                    OmegaConf.to_container(self.quick_job._config, resolve=False), cfg
+                ),
+            )
         OmegaConf.set_struct(cfg, True)
 
         # Validate the checkpoint before replacing the active configuration.
-        if self.quick_job._config_token is not None:
-            _current_config.reset(self.quick_job._config_token)
-        self.quick_job._config = cfg
-        self.quick_job._config_token = _current_config.set(cast(OmegaConf, cfg))
+        self.quick_job._replace_config(cfg)
         self.quick_job.base = node
         self.quick_job._resume = resume
         return self.quick_job

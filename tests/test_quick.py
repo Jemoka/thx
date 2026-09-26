@@ -56,6 +56,18 @@ class QuickSpecJob(FakeJob, BasicJob[QuickConfig]):
     state_restore = FakeJob.setup
 
 
+@dataclass(kw_only=True)
+class AnalysisConfig(QuickConfig):
+    label: str = field("analysis/label", default="default")
+    sequence: str = field("analysis/sequence")
+
+
+class AnalysisJob(FakeJob):
+    @classmethod
+    def config(cls) -> type[AnalysisConfig]:
+        return AnalysisConfig
+
+
 def register_fake_job(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(registry, "ensure_registered", lambda: None)
     monkeypatch.setitem(registry.JOBS, "tests/quickx", FakeJob)
@@ -94,14 +106,15 @@ def test_quick_resumes_last_matching_node(tmp_path, monkeypatch) -> None:
         selected = q.find().name("source").nonce("abcdef").checkpoint().resume()
         q.config.quick.value = 7
         result = q()
+        instance = q.create()
+        assert q.base == nodes[1]
 
     assert selected is q
-    assert q.base == nodes[1]
     assert result is True
-    assert q._instance.base == nodes[1]
-    assert q._instance.config_value == 7
-    assert q._instance._resume_required is True
-    assert q._instance.called_resume is True
+    assert instance.base == nodes[1]
+    assert instance.config_value == 7
+    assert instance._resume_required is True
+    assert instance.called_resume is True
 
 
 def test_init_branches_and_marks_created_job(tmp_path, monkeypatch) -> None:
@@ -163,7 +176,7 @@ def test_find_selection_order(tmp_path, monkeypatch, ordering) -> None:
             query.sort("_x_seq", ascending=False)
         query.resume()
 
-    assert q.base == (older if ordering == "sequence" else newer)
+        assert q.base == (older if ordering == "sequence" else newer)
 
 
 def test_find_requires_a_match_before_creation(tmp_path, monkeypatch) -> None:
@@ -198,7 +211,7 @@ def test_query_only_session_and_build_guards(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("selection", ["branch", "resume"])
-def test_build_clears_selection_but_preserves_queries(tmp_path, monkeypatch, selection):
+def test_build_preserves_selection_config_and_queries(tmp_path, monkeypatch, selection):
     register_fake_job(monkeypatch)
     nodes = seed_nodes(str(tmp_path))
     with quick(tmp_path) as q:
@@ -208,8 +221,9 @@ def test_build_clears_selection_but_preserves_queries(tmp_path, monkeypatch, sel
         missing_query = q.find().name("missing")
 
         q.build(FakeJob, "target")
-        assert q.base is None
-        assert q._resume is False
+        assert q.base == nodes[1]
+        assert q._resume is (selection == "resume")
+        assert q.config.quick.value == 5
         assert q.find().all() == sorted(nodes, key=lambda n: n.seq)
         assert missing_query.all() == []
         assert selected_query.branch() is q
@@ -219,6 +233,78 @@ def test_build_clears_selection_but_preserves_queries(tmp_path, monkeypatch, sel
         instance = q.create()
         assert instance.base == nodes[1]
         assert instance._resume_required is (selection == "resume")
+
+
+@pytest.mark.parametrize("selection", ["branch", "resume"])
+@pytest.mark.parametrize("select_first", [False, True])
+def test_explicit_build_and_selection_keep_analysis_keys(
+    tmp_path, monkeypatch, selection, select_first
+):
+    register_fake_job(monkeypatch)
+    nodes = seed_nodes(str(tmp_path))
+    with quick(tmp_path) as q:
+        if select_first:
+            getattr(q.find().name("source"), selection)()
+        q.build(AnalysisJob, "analysis")
+        q.config.analysis.label = "kept"
+        if not select_first:
+            q.config.quick.value = 99
+            getattr(q.find().name("source"), selection)()
+
+        assert q.config.quick.value == 5
+        assert q.config.analysis.label == "kept"
+        assert OmegaConf.is_missing(q.config.analysis, "sequence")
+        q.config.analysis.sequence = "new sequence"
+        assert OmegaConf.is_struct(q.config)
+        with pytest.raises(AttributeError):
+            q.config.analysis.typo = "invalid"
+        instance = q.create()
+        assert instance.base == nodes[1]
+        assert instance.config_value == 5
+        assert instance._resume_required is (selection == "resume")
+
+        # Rebuilding with fewer defaults must retain analysis config and edits.
+        q.config.quick.value = 7
+        q.build(FakeJob, "other")
+        assert instance.finished
+        assert q.config.quick.value == 7
+        assert q.config.analysis.label == "kept"
+        assert q.config.analysis.sequence == "new sequence"
+        assert q.base == nodes[1]
+        assert current_config() is q.config
+
+
+def test_close_clears_selection_config_instance_and_sharding(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    register_fake_job(monkeypatch)
+    seed_nodes(str(tmp_path))
+    before = current_config()
+    q = init(tmp_path)
+    try:
+        q.build(AnalysisJob, "analysis").shard(tp=2)
+        q.find().name("source").resume()
+        instance = q.create()
+        instance.finish = Mock()
+        q.close()
+        q.close()
+        instance.finish.assert_called_once_with()
+        assert q.base is None
+        assert q._resume is False
+        assert q._instance is None
+        assert q._sharding == ShardingPolicy()
+        assert current_config() is before
+        with pytest.raises(RuntimeError, match="build"):
+            q.create()
+
+        q.build(FakeJob, "fresh")
+        assert q.config.quick.value == 1
+        assert "analysis" not in q.config
+        fresh = q.create()
+        assert fresh.base is None
+        assert fresh._resume_required is False
+    finally:
+        q.close()
 
 
 def test_identical_build_preserves_edits_selection_and_instance(tmp_path, monkeypatch):
@@ -246,11 +332,12 @@ def test_identical_build_preserves_edits_selection_and_instance(tmp_path, monkey
         q.build(FakeJob, "target", config=overrides)
         assert instance.finished
         assert q.config.quick.value == 9
-        assert q.base is None
+        assert q.base is instance.base
+        assert q._resume is True
 
 
 @pytest.mark.parametrize("changed", ["job", "name", "project", "group", "config"])
-def test_changed_build_closes_and_replaces_session(tmp_path, monkeypatch, changed):
+def test_changed_build_replaces_instance_and_preserves_session(tmp_path, monkeypatch, changed):
     register_fake_job(monkeypatch)
     seed_nodes(str(tmp_path))
 
@@ -273,12 +360,14 @@ def test_changed_build_closes_and_replaces_session(tmp_path, monkeypatch, change
             }[changed]
             q.build(**args)
             assert first.finished
-            assert q.base is None
-            assert q._resume is False
+            assert q.base is first.base
+            assert q._resume is True
+            assert q.config.quick.value == (8 if changed == "config" else 5)
             assert current_config() is q.config
             second = q.create()
             assert second is not first
-            assert second.base is None
+            assert second.base is first.base
+            assert second._resume_required is True
         assert second.finished
         assert current_config() is outer
         q.close()

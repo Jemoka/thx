@@ -30,6 +30,7 @@ S = TypeVar("S", bound=Screen)
 class TheseusInterface:
     def __init__(self, root: Path, logs: Path | None = None) -> None:
         self.client = ui.context.client
+        self.closed = False
         self.restoring = True
         self.initial_location = Location(ui.context.client.request.url.query)
         self.root_path = root
@@ -53,7 +54,7 @@ class TheseusInterface:
         ui.on("locationchanged", self.restore_location)
         self.home = self.push_screen(RunTree)
         self.timer = ui.timer(2, self.refresh_data, immediate=False)
-        ui.timer(0.01, self.restore_location, once=True)
+        self.restore_timer = ui.timer(0.01, self.restore_location, once=True)
         ui.context.client.on_delete(self.close)
 
     def push_screen(
@@ -62,6 +63,7 @@ class TheseusInterface:
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> S:
+        self._ensure_open()
         if self.stack:
             self.stack[-1].set_visibility(False)
         with self.container:
@@ -88,6 +90,7 @@ class TheseusInterface:
     async def open_logs(
         self, data: RunData, file_name: str | None = None
     ) -> LogListScreen:
+        self._ensure_open()
         if self.logs_path is None:
             raise ValueError("log browsing is not configured")
         files = await run.io_bound(
@@ -96,6 +99,7 @@ class TheseusInterface:
             RunKey(data.name, data.nonce),
             data.executions,
         )
+        self._ensure_open()
         if files is None:
             raise asyncio.CancelledError
         screen = self.push_screen(LogListScreen, data, self.logs_path, files)
@@ -106,6 +110,7 @@ class TheseusInterface:
 
     async def workspace(self) -> WorkspaceData | None:
         async with self.lock:
+            self._ensure_open()
             for key in self.home.marked:
                 await self._load_run(key)
             return (
@@ -122,8 +127,10 @@ class TheseusInterface:
             )
 
     async def _load_run(self, key: RunKey) -> RunData:
+        self._ensure_open()
         if key not in self.loaded:
             data = await run.io_bound(RunData, self.cache.reader, key.name, key.nonce)
+            self._ensure_open()
             if data is None:
                 raise asyncio.CancelledError
             self.loaded[key] = data
@@ -154,7 +161,9 @@ class TheseusInterface:
     async def refresh_data(self) -> None:
         try:
             async with self.lock:
+                self._ensure_open()
                 result = await run.io_bound(self.read_data)
+                self._ensure_open()
                 if result is None:
                     return
                 self.version, self.runs, snapshots = result
@@ -163,10 +172,11 @@ class TheseusInterface:
                 for screen in self.stack:
                     screen.refresh_data()
         except Exception as error:
+            self._ensure_open()
             ui.notify(f"Unable to refresh runs: {error}", type="negative")
 
     def update_location(self, *, replace: bool = False) -> None:
-        if self.restoring:
+        if self.closed or self.restoring:
             return
         url = Location().url(self.stack[-1], self.home)
         method = "replaceState" if replace else "pushState"
@@ -221,6 +231,7 @@ class TheseusInterface:
                     )
                     self.push_screen(PlotScreen, data, plot, view)
         except (ValueError, TypeError, KeyError, StopIteration) as error:
+            self._ensure_open()
             ui.notify(f"Unable to restore location: {error}", type="negative")
         finally:
             self.restoring = False
@@ -229,6 +240,15 @@ class TheseusInterface:
     def key(self, event: GenericEventArguments) -> None:
         self.stack[-1].key(event.args)
 
+    def _ensure_open(self) -> None:
+        """Stop callbacks that outlive their client's database and UI."""
+        if self.closed:
+            raise asyncio.CancelledError
+
     def close(self) -> None:
-        self.timer.cancel()
+        if self.closed:
+            return
+        self.closed = True
+        self.timer.cancel(with_current_invocation=True)
+        self.restore_timer.cancel(with_current_invocation=True)
         self.state.close()

@@ -19,6 +19,7 @@ def interface(tmp_path):
     app.root_path = tmp_path
     app.state = InterfaceState(tmp_path / "ui.sqlite3")
     app.client = Mock()
+    app.loading = Mock()
     app.timer = Mock()
     app.restore_timer = Mock()
     app.home = Mock()

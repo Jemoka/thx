@@ -49,6 +49,9 @@ class TheseusInterface:
                 + "</script>"
             )
         self.container = ui.element("main").classes("terminal")
+        self.loading = (
+            ui.label("loading runs…").classes("loading-status").props("role=status")
+        )
         ui.on("terminalkey", self.key)
         ui.on("locationchanged", self.restore_location)
         self.home = self.push_screen(RunTree)
@@ -180,6 +183,8 @@ class TheseusInterface:
     async def restore_location(
         self, event: GenericEventArguments | None = None
     ) -> None:
+        self._ensure_open()
+        self.loading.set_visibility(True)
         self.restoring = True
         location = Location(event.args) if event is not None else self.initial_location
         try:
@@ -228,6 +233,8 @@ class TheseusInterface:
             ui.notify(f"Unable to restore location: {error}", type="negative")
         finally:
             self.restoring = False
+            if not self.closed:
+                self.loading.set_visibility(False)
             self.update_location(replace=True)
 
     def key(self, event: GenericEventArguments) -> None:

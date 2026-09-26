@@ -37,6 +37,17 @@ textarea,
   height: 100%;
   overflow: hidden;
 }
+.loading-status {
+  position: fixed;
+  right: 1ch;
+  bottom: 4px;
+  z-index: 10;
+  padding: 0 0.5ch;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
 .screen {
   display: flex;
   flex-direction: column;

@@ -102,7 +102,7 @@ class RunScreen(Screen):
             ui.notify("Checkpoint files are unavailable", type="warning")
             return
         path = Path(blob).resolve()
-        if not path.is_relative_to((self.app.cache.reader.root() / "blobs").resolve()):
+        if not path.is_relative_to((self.app.reader.root() / "blobs").resolve()):
             ui.notify("Checkpoint is outside this store", type="negative")
             return
         documents = {}

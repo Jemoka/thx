@@ -11,7 +11,6 @@ from typing import Concatenate, ParamSpec, TypeVar
 from nicegui import run, ui
 from nicegui.events import GenericEventArguments
 
-from theseus.cli.interface.cache import ObjectCache
 from theseus.cli.interface.data import RunData, RunKey, RunSnapshot, WorkspaceData
 from theseus.cli.interface.location import Location
 from theseus.cli.interface.log_data import LogFile
@@ -22,6 +21,7 @@ from theseus.cli.interface.run import RunScreen
 from theseus.cli.interface.state import InterfaceState
 from theseus.cli.interface.tree import RunTree
 from theseus.cli.interface.view import ViewScreen
+from theseus.store import ObjectReader
 
 P = ParamSpec("P")
 S = TypeVar("S", bound=Screen)
@@ -36,8 +36,7 @@ class TheseusInterface:
         self.root_path = root
         self.logs_path = logs
         self.state = InterfaceState()
-        self.cache = ObjectCache(root)
-        self.version = -1
+        self.reader = ObjectReader.local(root)
         self.runs: dict[tuple[str, str], int] = {}
         self.loaded: dict[RunKey, RunData] = {}
         self.lock = asyncio.Lock()
@@ -129,7 +128,7 @@ class TheseusInterface:
     async def _load_run(self, key: RunKey) -> RunData:
         self._ensure_open()
         if key not in self.loaded:
-            data = await run.io_bound(RunData, self.cache.reader, key.name, key.nonce)
+            data = await run.io_bound(RunData, self.reader, key.name, key.nonce)
             self._ensure_open()
             if data is None:
                 raise asyncio.CancelledError
@@ -138,14 +137,9 @@ class TheseusInterface:
 
     def read_data(
         self,
-    ) -> (
-        tuple[int, dict[tuple[str, str], int], list[tuple[RunData, RunSnapshot]]] | None
-    ):
-        version = self.cache.poll()
-        if version == self.version:
-            return None
+    ) -> tuple[dict[tuple[str, str], int], list[tuple[RunData, RunSnapshot]]]:
         runs: dict[tuple[str, str], int] = {}
-        for node, values in self.cache.reader.query().select(
+        for node, values in self.reader.query().select(
             return_nodes=True, raw=True, keys=["_x_write"]
         ):
             modified = values.get("_x_write")
@@ -153,9 +147,8 @@ class TheseusInterface:
                 key = (node.name, node.nonce)
                 runs[key] = max(runs.get(key, 0), int(modified))
         return (
-            version,
             runs,
-            [(data, data.read(self.cache.reader)) for data in self.loaded.values()],
+            [(data, data.read(self.reader)) for data in self.loaded.values()],
         )
 
     async def refresh_data(self) -> None:
@@ -166,7 +159,7 @@ class TheseusInterface:
                 self._ensure_open()
                 if result is None:
                     return
-                self.version, self.runs, snapshots = result
+                self.runs, snapshots = result
                 for data, snapshot in snapshots:
                     data.apply(snapshot)
                 for screen in self.stack:

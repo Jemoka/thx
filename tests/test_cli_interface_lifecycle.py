@@ -24,7 +24,6 @@ def interface(tmp_path):
     app.home = Mock()
     app.home.resume.side_effect = lambda: app.state.views(tmp_path)
     app.stack = [app.home]
-    app.version = -1
     app.runs = {}
     app.lock = asyncio.Lock()
     yield app
@@ -43,7 +42,7 @@ def test_close_during_refresh_stops_ui_updates(interface, monkeypatch, callback,
             await released.wait()
             if outcome == "error":
                 raise OSError("read failed after disconnect")
-            return (1, {}, []) if outcome == "data" else None
+            return ({("alpha", "abcdef"): 1}, []) if outcome == "data" else None
 
         notify = Mock()
         monkeypatch.setattr(driver.run, "io_bound", read_data)
@@ -58,7 +57,7 @@ def test_close_during_refresh_stops_ui_updates(interface, monkeypatch, callback,
         interface.home.refresh_data.assert_not_called()
         interface.client.run_javascript.assert_not_called()
         notify.assert_not_called()
-        assert interface.version == -1
+        assert interface.runs == {}
 
     asyncio.run(scenario())
 
@@ -88,7 +87,9 @@ def test_close_cancels_both_timers_once(interface):
 
 
 def test_connected_refresh_still_updates_screens(interface, monkeypatch):
-    monkeypatch.setattr(driver.run, "io_bound", AsyncMock(return_value=(1, {}, [])))
+    monkeypatch.setattr(
+        driver.run, "io_bound", AsyncMock(return_value=({("alpha", "abcdef"): 1}, []))
+    )
     asyncio.run(interface.refresh_data())
-    assert interface.version == 1
+    assert interface.runs == {("alpha", "abcdef"): 1}
     interface.home.refresh_data.assert_called_once_with()

@@ -6,7 +6,7 @@ from uuid import uuid4
 from typing import Any, Callable, Literal, Mapping, Self, TypeAlias, cast
 
 import cloudpickle
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -204,10 +204,12 @@ class Combobulation(BaseModel):
             return execution
         if not isinstance(serialized_config, str):
             raise ValueError("Combobulation config must be an OmegaConf YAML string")
-        configuration = OmegaConf.merge(
-            execution.config,
-            OmegaConf.create(serialized_config),
-        )
+        # A resumed analysis can retain fields declared by its training job.
+        with open_dict(execution.config):
+            configuration = OmegaConf.merge(
+                execution.config,
+                OmegaConf.create(serialized_config),
+            )
         OmegaConf.set_struct(configuration, True)
         execution._configuration = cast(DictConfig, configuration)
         return execution

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import cloudpickle
 import pytest
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 from omegaconf.errors import ConfigAttributeError
 from pydantic import BaseModel, ValidationError
 
@@ -173,6 +173,20 @@ def test_execution_serializes_and_deserializes_complete_setup(tmp_path: Path) ->
 
     assert restored.jobs == chain.jobs
     assert restored.serialize() == OmegaConf.load(path)
+
+
+def test_execution_round_trip_preserves_checkpoint_only_fields() -> None:
+    serialized = Combobulator().run(FirstJob).serialize()
+    with open_dict(serialized.config.first):
+        serialized.config.first.checkpoint_only = {"sampling": {"max_steps": 26}}
+
+    restored = Combobulation.deserialize(serialized)
+
+    assert restored.config.first.checkpoint_only.sampling.max_steps == 26
+    assert restored.serialize() == serialized
+    assert OmegaConf.is_struct(restored.config)
+    with pytest.raises(ConfigAttributeError):
+        restored.config.first.unrelated = True
 
 
 def test_execution_model_dump_round_trips_registered_jobs() -> None:

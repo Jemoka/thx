@@ -5,7 +5,6 @@ import multiprocessing
 import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from pathlib import Path
 from time import monotonic, sleep
 from unittest.mock import Mock
 
@@ -220,20 +219,10 @@ def test_competing_schemas_keep_first_commit_and_fail_loser(
     write = store_module.write_deltalake
 
     def concurrent_write(*args, **kwargs):
-        if created:
-            barrier.wait(timeout=10)
+        barrier.wait(timeout=10)
         return write(*args, **kwargs)
 
-    touch = Path.touch
-
-    def concurrent_creation(path, *args, **kwargs):
-        if path.name == ".creating":
-            barrier.wait(timeout=10)
-        return touch(path, *args, **kwargs)
-
     monkeypatch.setattr(store_module, "write_deltalake", concurrent_write)
-    if not created:
-        monkeypatch.setattr(Path, "touch", concurrent_creation)
     for index, writer in enumerate(stores):
         writer.value(Node(name=f"writer-{index}"), {f"column-{index}": index})
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -250,7 +239,29 @@ def test_competing_schemas_keep_first_commit_and_fail_loser(
         f"column-{1 - winner}"
         not in pa.schema(DeltaTable(store.values()).schema().to_arrow()).names
     )
-    assert not (store.values() / ".creating").exists()
+
+
+def test_concurrent_creators_with_one_schema_both_commit(tmp_path, monkeypatch):
+    stores = [ObjectStore.local(tmp_path) for _ in range(2)]
+    barrier = Barrier(2)
+    write = store_module.write_deltalake
+
+    def concurrent_write(*args, **kwargs):
+        if kwargs["mode"] == "error":
+            barrier.wait(timeout=10)
+        return write(*args, **kwargs)
+
+    monkeypatch.setattr(store_module, "write_deltalake", concurrent_write)
+    for index, writer in enumerate(stores):
+        writer.value(Node(name=f"writer-{index}"), {"shared": index})
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for future in [pool.submit(writer.close) for writer in stores]:
+            assert future.exception() is None
+    assert sorted(row["shared"] for row in stores[0].query().select()) == [0, 1]
+    # The losing creator appends instead of committing a second table creation.
+    history = DeltaTable(stores[0].values()).history()
+    modes = [entry.get("operationParameters", {}).get("mode") for entry in history]
+    assert modes.count("ErrorIfExists") == 1
 
 
 def test_process_writers_append_same_schema_without_lost_rows(tmp_path):

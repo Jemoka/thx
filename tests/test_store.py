@@ -52,33 +52,6 @@ def test_local_constructs_store_without_an_execution_spec(tmp_path: Path) -> Non
     store.close()
 
 
-@pytest.mark.parametrize("operation", ["touch", "unlink"])
-def test_creation_marker_retries_transient_io(hardware, monkeypatch, operation):
-    original = getattr(Path, operation)
-    attempts = 0
-
-    def transient(path, *args, **kwargs):
-        nonlocal attempts
-        if path.name == ".creating":
-            attempts += 1
-            if attempts == 1:
-                # An unlink may succeed remotely before its response times out.
-                if operation == "unlink":
-                    original(path, *args, **kwargs)
-                raise TimeoutError(errno.ETIMEDOUT, "Connection timed out")
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, operation, transient)
-    monkeypatch.setattr(store_module, "_DELTA_IO_RETRY_SECONDS", 0)
-    store = ObjectStore(hardware)
-    store.value(Node(name="retry", nonce="abcdef", seq=1), {"loss": 1.0})
-    store.close()
-
-    assert attempts == 2
-    assert not (store.values() / ".creating").exists()
-    assert [row["loss"] for row in read_rows(store)] == [1.0]
-
-
 @pytest.mark.parametrize(
     "error",
     [

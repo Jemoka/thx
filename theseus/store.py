@@ -35,8 +35,8 @@ from uuid import uuid4
 import chdb
 import jax
 import pyarrow as pa
-from deltalake import DeltaTable, write_deltalake
-from deltalake.exceptions import CommitFailedError, TableNotFoundError
+from deltalake import CommitProperties, DeltaTable, write_deltalake
+from deltalake.exceptions import CommitFailedError, DeltaError, TableNotFoundError
 from flax import serialization
 from loguru import logger
 
@@ -483,42 +483,41 @@ class ObjectStore(ObjectReader):
             columns[name] = pa.array(
                 [s.cast(target, safe=True) for s in scalars], type=target
             )
-        creation = values / ".creating"
-        if snapshot is None:
-            self._retry_io(lambda: creation.touch(exist_ok=False))
-        try:
-            # A creator may have finished since our initial lookup. Do not let
-            # delta-rs retry creation over its schema; only appends may retry.
-            if snapshot is None and self._retry_io(
-                lambda: DeltaTable.is_deltatable(str(values))
-            ):
-                raise FileExistsError(f"Delta table was concurrently created: {values}")
-            for attempt in range(_DELTA_IO_ATTEMPTS):
-                try:
-                    self._retry_io(
-                        lambda: write_deltalake(
-                            snapshot if snapshot is not None else values,
-                            pa.table(columns),
-                            mode="append" if snapshot is not None else "error",
-                            schema_mode="merge",
-                        )
+        for attempt in range(_DELTA_IO_ATTEMPTS):
+            try:
+                self._retry_io(
+                    lambda: write_deltalake(
+                        snapshot if snapshot is not None else values,
+                        pa.table(columns),
+                        mode="append" if snapshot is not None else "error",
+                        schema_mode="merge",
+                        # A losing creator would rebase its create onto v1 and
+                        # replace the winner's schema, so only appends retry.
+                        commit_properties=(
+                            None
+                            if snapshot is not None
+                            else CommitProperties(max_commit_retries=0)
+                        ),
                     )
-                    break
-                except CommitFailedError:
-                    if snapshot is None or attempt + 1 == _DELTA_IO_ATTEMPTS:
-                        raise
+                )
+                return
+            except DeltaError as error:
+                if attempt + 1 == _DELTA_IO_ATTEMPTS or (
+                    snapshot is not None and not isinstance(error, CommitFailedError)
+                ):
+                    raise
+                # A lost creation retries as an append under the same rule.
+                try:
                     snapshot = self._retry_io(lambda: DeltaTable(values))
-                    schema = pa.schema(self._retry_io(snapshot.schema).to_arrow())
-                    if any(
-                        name not in schema.names
-                        or schema.field(name).type != column.type
-                        for name, column in columns.items()
-                    ):
-                        raise
-                    sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
-        finally:
-            if snapshot is None:
-                self._retry_io(lambda: creation.unlink(missing_ok=True))
+                except TableNotFoundError:
+                    raise error
+                schema = pa.schema(self._retry_io(snapshot.schema).to_arrow())
+                if any(
+                    name not in schema.names or schema.field(name).type != column.type
+                    for name, column in columns.items()
+                ):
+                    raise
+                sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
 
     @staticmethod
     def _lub(left: pa.DataType, right: pa.DataType) -> pa.DataType:

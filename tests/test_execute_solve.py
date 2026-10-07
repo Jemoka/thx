@@ -192,7 +192,7 @@ def test_ssh_provider_translates_execution_request(
             (),
             {
                 "ok": True,
-                "stdout": "NVIDIA H100, 0, 80000\nNVIDIA H100, 0, 80000",
+                "stdout": "NVIDIA H100, 0, 80000, GPU-0\nNVIDIA H100, 0, 80000, GPU-1",
                 "stderr": "",
             },
         )()
@@ -216,10 +216,13 @@ def test_ssh_provider_translates_execution_request(
     assert result.hosts[0].cluster.cache_dir == "/cache/juicefs"
     assert result.hosts[0].cluster.all_squash == "1000:1000"
     assert result.hosts[0].uv_groups == ["cuda"]
-    assert result.hosts[0].env == {"UV_CACHE_DIR": "/cache/uv"}
+    assert result.hosts[0].env == {
+        "UV_CACHE_DIR": "/cache/uv",
+        "CUDA_VISIBLE_DEVICES": "GPU-0,GPU-1",
+    }
     assert calls == [
         (
-            "nvidia-smi --query-gpu=name,memory.used,memory.total "
+            "nvidia-smi --query-gpu=name,memory.used,memory.total,uuid "
             "--format=csv,noheader,nounits",
             "ssh",
             12.0,
@@ -249,7 +252,7 @@ def test_ssh_provider_does_not_combine_hosts(
             (),
             {
                 "ok": True,
-                "stdout": "NVIDIA H100, 0, 80000\nNVIDIA H100, 0, 80000",
+                "stdout": "NVIDIA H100, 0, 80000, GPU-0\nNVIDIA H100, 0, 80000, GPU-1",
                 "stderr": "",
             },
         )(),
@@ -283,8 +286,8 @@ def test_ssh_provider_does_not_substitute_a_different_free_gpu(
             {
                 "ok": True,
                 "stdout": (
-                    "NVIDIA H100 NVL, 70000, 95830\n"
-                    "NVIDIA RTX PRO 6000 Blackwell, 0, 97887"
+                    "NVIDIA H100 NVL, 70000, 95830, GPU-0\n"
+                    "NVIDIA RTX PRO 6000 Blackwell, 0, 97887, GPU-1"
                 ),
                 "stderr": "",
             },
@@ -319,10 +322,10 @@ def test_ssh_provider_matches_reported_blackwell_name(
             {
                 "ok": True,
                 "stdout": (
-                    "NVIDIA H100 NVL, 0, 95830\n"
-                    "NVIDIA H100 NVL, 0, 95830\n"
-                    "NVIDIA RTX PRO 6000 Blackwell Server Edition, 0, 97887\n"
-                    "NVIDIA RTX PRO 6000 Blackwell Server Edition, 0, 97887"
+                    "NVIDIA H100 NVL, 0, 95830, GPU-0\n"
+                    "NVIDIA H100 NVL, 0, 95830, GPU-1\n"
+                    "NVIDIA RTX PRO 6000 Blackwell Server Edition, 0, 97887, GPU-2\n"
+                    "NVIDIA RTX PRO 6000 Blackwell Server Edition, 0, 97887, GPU-3"
                 ),
                 "stderr": "",
             },
@@ -336,6 +339,7 @@ def test_ssh_provider_matches_reported_blackwell_name(
 
     assert result is not None
     assert result.chip == SUPPORTED_CHIPS["b6000"]
+    assert result.hosts[0].env == {"CUDA_VISIBLE_DEVICES": "GPU-2,GPU-3"}
 
 
 def test_ssh_cpu_layout_hides_unallocated_gpus(tmp_path: Path) -> None:

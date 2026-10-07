@@ -101,7 +101,7 @@ class SSHProvider(Provider):
             return HardwareResult(chip=None, hosts=[machine], total_chips=0)
 
         inspected = run(
-            "nvidia-smi --query-gpu=name,memory.used,memory.total "
+            "nvidia-smi --query-gpu=name,memory.used,memory.total,uuid "
             "--format=csv,noheader,nounits",
             self.host.ssh,
             timeout=timeout,
@@ -113,15 +113,18 @@ class SSHProvider(Provider):
                 inspected.stderr,
             )
             return None
-        devices: list[tuple[str, int, int]] = []
+        devices: list[tuple[str, int, int, str]] = []
         for line in inspected.stdout.splitlines():
             try:
-                device, used, total = (value.strip() for value in line.rsplit(",", 2))
+                device, used, total, uuid = (
+                    value.strip() for value in line.rsplit(",", 3)
+                )
                 devices.append(
                     (
                         device,
                         int(used),
                         int(total),
+                        uuid,
                     )
                 )
             except ValueError:
@@ -134,22 +137,27 @@ class SSHProvider(Provider):
             if chip is None:
                 logger.warning("Unknown requested chip {}", name)
                 continue
-            available = sum(
-                match(device) == chip and used < max(total * 0.1, 1024)
-                for device, used, total in devices
-            )
-            if min(available, self.host.chips.get(name, 0)) >= minimum:
+            available = [
+                uuid
+                for device, used, total, uuid in devices
+                if match(device) == chip and used < max(total * 0.1, 1024)
+            ]
+            if min(len(available), self.host.chips.get(name, 0)) >= minimum:
                 selected = chip
                 break
         if selected is None:
             return None
 
+        # Pin run to solved GPUs, else heterogeneous/busy hosts expose every GPU.
         machine = ClusterMachine(
             name=self.name,
             cluster=cluster,
             resources={selected: minimum},
             uv_groups=list(self.host.uv_groups),
-            env=dict(self.host.env),
+            env={
+                **self.host.env,
+                "CUDA_VISIBLE_DEVICES": ",".join(available[:minimum]),
+            },
         )
         return HardwareResult(
             chip=selected,

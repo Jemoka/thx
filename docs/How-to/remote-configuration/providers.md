@@ -191,7 +191,8 @@ Direct SSH selects one machine and checks GPU memory use as an availability
 heuristic. It is not a reservation scheduler, and it does not enforce CPU or
 RAM requests. Its GPU inspection uses `nvidia-smi`; a chip appearing in the
 registry does not imply this provider can discover it through another
-accelerator's tooling.
+accelerator's tooling. The worker's `CUDA_VISIBLE_DEVICES` is set to the UUIDs
+of the free matching GPUs chosen at solve time, replacing any value from `env`.
 
 ### Option B: a SLURM cluster
 

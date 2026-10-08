@@ -25,7 +25,7 @@ class AdditionConfig:
 
 @dataset("addition")
 class Addition(StringDataset):
-    """Fixed-width addition serialized for ``TrivialTokenizer``.
+    """Fixed-width addition serialized for ``TrivialNumericTokenizer``.
 
     The config owns the IDs for ``<eos>``, ``<bos>``, ``<mid>``, ``+``, ``=``,
     ``|``, and the first digit. With IDs 0..5 and digit offset 6, the example
@@ -86,7 +86,9 @@ class Addition(StringDataset):
             **{self.digit_offset + digit: str(digit) for digit in range(10)},
         }
         if self.eos_token != 0:
-            raise ValueError("addition eos token must match TrivialTokenizer token 0")
+            raise ValueError(
+                "addition eos token must match TrivialNumericTokenizer token 0"
+            )
         if set(self.token_labels) != set(range(16)):
             raise ValueError("addition token IDs must uniquely cover 0 through 15")
 

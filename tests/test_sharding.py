@@ -334,6 +334,39 @@ def test_validation_uses_trainer_sharding_context(trainer_factory, policy):
     assert_values(results[1], results[0])
 
 
+@pytest.mark.parametrize("microbatches", [1, 5, 512])
+def test_validation_retains_last_diagnostics_without_stacking(trainer_factory, microbatches):
+    class DiagnosticModel(TinyModel):
+        @nn.compact
+        def __call__(self, x, y=None, padding_mask=None, deterministic=False):
+            self.sow("plots", "pairwise", x[0][:, None] * x[0][None, :])
+            return super().__call__(x, y, padding_mask, deterministic)
+
+    trainer = trainer_factory(ShardingPolicy(zero=False), model=DiagnosticModel())
+    x = np.arange(microbatches * 32, dtype=np.float32).reshape(microbatches, 4, 8) / 64
+    mask = np.ones_like(x, dtype=np.int32)
+    mask[::2, :, 4:] = 0
+    host = {"x": x, "y": np.full_like(x, 0.2), "padding_mask": mask}
+    batch = jax.device_put(host, NamedSharding(trainer.mesh, P(None, Axis.BATCH, None)))
+    validate = partial(trainer.val_step, sharding=trainer.sharding_context)
+    loss_sum, count, diagnostics = jax.jit(validate)(trainer.state, batch)
+    kernel = np.asarray(trainer.state.params["kernel"].value)
+    bias = np.asarray(trainer.state.params["bias"])
+    losses = np.square(x @ kernel + bias - host["y"]).mean(axis=(1, 2))
+    counts = mask.sum(axis=(1, 2))
+    np.testing.assert_allclose(loss_sum, (losses * counts).sum(), rtol=2e-5)
+    assert int(count) == int(counts.sum())
+    np.testing.assert_array_equal(diagnostics["plots"]["pairwise"][0], x[-1, 0, :, None] * x[-1, 0, None, :])
+
+    graph = jax.make_jaxpr(validate)(trainer.state, batch).jaxpr
+    scans = [eqn for eqn in graph.eqns if eqn.primitive.name == "scan"]
+    assert scans
+    assert all(
+        variable.aval.shape != (microbatches, 8, 8)
+        for scan in scans for variable in scan.outvars
+    )
+
+
 def test_compiled_steps_do_not_retain_trainer_and_donate_state(trainer_factory):
     import gc
     import weakref

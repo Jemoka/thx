@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from functools import lru_cache
 import re
+import string
 from typing import Any, Literal, Optional, Protocol, Sequence, cast, overload
 
 import tiktoken
@@ -30,6 +31,8 @@ class Tokenizer(Protocol):
 class TokenizerConfig:
     backend: str = field("tokenizer/backend", default="tiktoken")
     name: str = field("tokenizer/name", default="cl100k_base")
+    charset: str = field("tokenizer/character/charset", default=string.printable)
+    eot_character: str = field("tokenizer/character/eot", default="|")
     hf_use_fast: bool = field("tokenizer/huggingface/use_fast", default=True)
     hf_trust_remote_code: bool = field(
         "tokenizer/huggingface/use_remote_code", default=False
@@ -124,7 +127,7 @@ class HuggingFaceTokenizer:
         )
 
 
-class TrivialTokenizer:
+class TrivialNumericTokenizer:
     """Minimal tokenizer: space-splits text and casts each piece to int."""
 
     @property
@@ -145,6 +148,48 @@ class TrivialTokenizer:
 
     def decode(self, tokens: Sequence[int]) -> str:
         return " ".join(str(t) for t in tokens)
+
+    def decode_batch(self, tokens_batch: Sequence[Sequence[int]]) -> list[str]:
+        return [self.decode(tokens) for tokens in tokens_batch]
+
+
+class TrivialCharacterTokenizer:
+    """One Unicode code point per token; charset restricts accepted input.
+
+    IDs are ord(character), independent of charset ordering. The model vocabulary
+    must cover max(ord(character) for character in charset) + 1. Decoding accepts
+    any valid code point so predictions outside the input charset remain readable.
+    """
+
+    def __init__(self, charset: str = string.printable, eot: str = "|"):
+        if not charset or len(set(charset)) != len(charset):
+            raise ValueError("charset must contain distinct characters and be nonempty")
+        if len(eot) != 1 or eot not in charset:
+            raise ValueError("eot must be one character in charset")
+        self.charset = frozenset(charset)
+        self._eot_token = ord(eot)
+
+    @property
+    def eot_token(self) -> int:
+        return self._eot_token
+
+    def encode(self, text: str, allowed_special: Any = "all") -> list[int]:
+        del allowed_special
+        unknown = set(text) - self.charset
+        if unknown:
+            raise ValueError(f"Characters outside charset: {sorted(unknown)!r}")
+        return [ord(character) for character in text]
+
+    def encode_batch(
+        self, texts: Sequence[str], allowed_special: Any = "all"
+    ) -> list[list[int]]:
+        return [self.encode(text, allowed_special) for text in texts]
+
+    def encode_ordinary(self, text: str) -> list[int]:
+        return self.encode(text)
+
+    def decode(self, tokens: Sequence[int]) -> str:
+        return "".join(chr(token) for token in tokens)
 
     def decode_batch(self, tokens_batch: Sequence[Sequence[int]]) -> list[str]:
         return [self.decode(tokens) for tokens in tokens_batch]
@@ -180,11 +225,16 @@ def _build_tokenizer_cached(
     name: str,
     hf_use_fast: bool,
     hf_trust_remote_code: bool,
+    charset: str = string.printable,
+    eot_character: str = "|",
 ) -> Tokenizer:
     backend_name = backend.lower().strip()
 
-    if backend_name == "trivial":
-        return TrivialTokenizer()
+    if backend_name in {"trivial", "trivial_numeric"}:
+        return TrivialNumericTokenizer()
+
+    if backend_name == "trivial_character":
+        return TrivialCharacterTokenizer(charset, eot_character)
 
     if backend_name == "tiktoken":
         # Always use ChatML formatting for tiktoken backends.
@@ -211,7 +261,7 @@ def _build_tokenizer_cached(
 
     raise ValueError(
         f"Unknown tokenizer backend '{backend}'. Supported backends: "
-        "'tiktoken', 'huggingface', 'trivial'."
+        "'tiktoken', 'huggingface', 'trivial_numeric' (alias 'trivial'), 'trivial_character'."
     )
 
 
@@ -222,6 +272,8 @@ def get_tokenizer(tokenizer_cfg: Optional[TokenizerConfig] = None) -> Tokenizer:
         name=cfg.name,
         hf_use_fast=cfg.hf_use_fast,
         hf_trust_remote_code=cfg.hf_trust_remote_code,
+        charset=cfg.charset,
+        eot_character=cfg.eot_character,
     )
 
 

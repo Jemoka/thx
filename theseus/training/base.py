@@ -852,12 +852,25 @@ class BaseTrainer(RestoreableJob[C], CometLoggingJob[C], Generic[C, M]):
             n = mask.sum()  # count real tokens: scalar
             return (loss_sum + loss_i * n, count + n), meta
 
-        # scan over S micro-batches, accumulating weighted loss
-        (loss_sum, count), metas = jax.lax.scan(
-            reduce, (jnp.array(0.0), jnp.array(0)), batch
+        # Only the last microbatch's diagnostics are returned. Carry them instead
+        # of stacking potentially large plots across every validation microbatch.
+        initial, first_meta = reduce(
+            (jnp.array(0.0), jnp.array(0)),
+            jax.tree.map(lambda x: x[0], batch),
         )
 
-        last_meta: Any = jax.tree_util.tree_map(lambda x: x[-1], metas)
+        def reduce_remaining(
+            carry: Tuple[jax.Array, jax.Array, Any], xb_item: Any
+        ) -> Tuple[Tuple[jax.Array, jax.Array, Any], None]:
+            loss_sum, count, _ = carry
+            totals, meta = reduce((loss_sum, count), xb_item)
+            return (*totals, meta), None
+
+        (loss_sum, count, last_meta), _ = jax.lax.scan(
+            reduce_remaining,
+            (*initial, first_meta),
+            jax.tree.map(lambda x: x[1:], batch),
+        )
 
         return loss_sum, count, last_meta
 

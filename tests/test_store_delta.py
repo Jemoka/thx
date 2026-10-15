@@ -206,6 +206,40 @@ def test_schema_commit_conflicts_propagate_without_retry(tmp_path, monkeypatch):
     assert pending.call_count == 1
 
 
+@pytest.mark.parametrize("delta_log", [True, False])
+def test_missing_delta_log_refreshes_snapshot(tmp_path, monkeypatch, delta_log):
+    store = ObjectStore.local(tmp_path)
+    store.value(Node(name="seed"), {"value": 0})
+    store.close()
+    write = store_module.write_deltalake
+    snapshots = []
+    missing = (
+        store.values() / "_delta_log" / "00000000000000000208.json"
+        if delta_log else store.values() / "missing-data.parquet"
+    )
+
+    def stale_write(snapshot, *args, **kwargs):
+        snapshots.append(snapshot)
+        if len(snapshots) == 1:
+            raise FileNotFoundError(f"Object at location {missing} not found")
+        assert snapshot is not snapshots[0]
+        return write(snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(store_module, "write_deltalake", stale_write)
+    monkeypatch.setattr(store_module, "_DELTA_IO_RETRY_SECONDS", 0)
+    store.start()
+    store.value(Node(name="refresh"), {"value": 1})
+    if delta_log:
+        store.close()
+        assert len(snapshots) == 2
+        assert store.query().name("refresh").select() == [{"value": 1}]
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            store.close()
+        assert isinstance(raised.value.__cause__, FileNotFoundError)
+        assert len(snapshots) == 1
+
+
 @pytest.mark.parametrize("created", [False, True])
 def test_competing_schemas_keep_first_commit_and_fail_loser(
     tmp_path, monkeypatch, created

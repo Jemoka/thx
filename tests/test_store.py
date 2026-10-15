@@ -99,6 +99,21 @@ def test_wide_selection_preserves_sparse_merge_and_query_semantics(
     assert store.query().latest().select(keys=["loss"]) == [{"loss": 1.0}]
 
 
+def test_artifact_preserves_existing_node_specification(hardware: HardwareResult) -> None:
+    store = RecordStore(hardware)
+    node = Node(name="checkpoint", nonce="abcdef", seq=3).next()
+    with store.blob(node, {"_x_checkpoint": True}) as directory:
+        pass
+    path = directory / "nodespec.json"
+    original = node.model_dump_json(indent=2).encode()
+    path.write_bytes(original)
+    # Time-travel queries identify a node without carrying its parent field.
+    store.artifact(Node.deserialize(node.serialize()), "probe", {}, {"value": 1})
+    store.close()
+    assert path.read_bytes() == original
+    assert store.parents(node) == [Node.deserialize(node.parent)]
+
+
 def test_record_store_writes_marks_and_decodes_records(
     hardware: HardwareResult,
 ) -> None:

@@ -16,7 +16,7 @@ from theseus.config import configuration
 from theseus.execute.combobulator import Step
 from theseus.execute.dispatch import DispatchSpec
 from theseus.execute.run.lineage import Lineage
-from theseus.job import BasicJob
+from theseus.job import BasicJob, RestoreableJob
 
 
 @dataclass
@@ -105,8 +105,14 @@ class Runner:
         spec = self.spec.model_copy(update={"tag": tag})
         job: BasicJob[Any] | None = None
         try:
-            with configuration(self.config):
-                job = step.job(spec, base=base)
+            cfg = self.config
+            if base is not None and issubclass(step.job, RestoreableJob):
+                job, cfg = step.job.from_node(
+                    base, spec, runtime_cfg=self.config, resume=resume
+                )
+            with configuration(cfg):
+                if job is None:
+                    job = step.job(spec, base=base)
                 job(resume=resume)
         except BaseException:
             if job is not None:

@@ -25,6 +25,8 @@ def trainer(monkeypatch):
     instance.chkpt_manager = Mock()
     instance.main_process = Mock(return_value=True)
     instance.train = Mock()
+    instance.mfu = Mock()
+    instance._train_flops = 0.0
     monkeypatch.setattr(comet_ml, "start", Mock())
     monkeypatch.setattr("theseus.job.logger.add", Mock(return_value=123))
     monkeypatch.setattr("theseus.job.logger.remove", Mock())
@@ -49,9 +51,9 @@ def test_disabled_or_worker_keeps_local_logging(trainer, remote, primary):
     assert CometLoggingJob.artifact is LoggingJob.artifact
 
 
-def test_trainer_schema_defaults_to_local_logging():
+def test_trainer_schema_defaults_to_remote_logging():
     cfg = build(*TinyGPT.config())
-    assert cfg.logging.remote is False
+    assert cfg.logging.remote is True
     assert cfg.architecture.n_layers > 0
     assert cfg.training.batch_size > 0
 

@@ -176,6 +176,15 @@ class MyPplEval(PerplexityEvaluation):
         return self.ds[indx]["text"]
 ```
 
+The built-in `fineweb_ppl` streams text from Hugging Face's
+`HuggingFaceFW/fineweb`, configuration `CC-MAIN-2022-21`. Set
+`eval/fineweb_ppl/split` to choose its dataset split (default: `train`), and
+`eval/fineweb_ppl/num_samples` to limit the sampled documents (default: 500).
+The requested split must exist in that configuration; unavailable splits raise
+the dataset loader's error without fallback. Evaluating on `train` may overlap
+FineWeb pretraining data. Choose data disjoint from training, or accept that
+the metric evaluates previously used data rather than held-out generalization.
+
 Each document is truncated to `block_size` before scoring. To report bits per
 byte instead, inherit `BitsPerByteEvaluation` from the same module and implement
 the same `name`, `__len__`, and `get` interface. That metric is also lower-is-better;

@@ -313,8 +313,8 @@ class ObjectStore(ObjectReader):
     ) -> Iterator[Path]:
         """Open the directory used to write a node's blob.
 
-        On normal context exit, process 0 writes ``nodespec.json`` and every process
-        records the blob's relative path together with the supplied metadata. If the
+        On normal context exit, process 0 creates ``nodespec.json`` if absent and
+        every process records the blob's relative path with the supplied metadata. If the
         context exits with an exception, the partial directory is left in place but
         no metadata row is recorded.
 
@@ -344,8 +344,15 @@ class ObjectStore(ObjectReader):
         # we are not doing here but just fyi.
 
         if jax.process_index() == 0:
-            with open(value / "nodespec.json", "w") as f:
-                f.write(node.model_dump_json())
+            try:
+                with open(value / "nodespec.json", "x") as f:
+                    f.write(node.model_dump_json())
+            except FileExistsError:
+                existing = Node.model_validate_json(
+                    (value / "nodespec.json").read_text()
+                )
+                if existing.serialize() != node.serialize():
+                    raise ValueError("Blob node specification has a different identity")
 
         row = dict(metadata) if metadata is not None else {}
         row.update({"_x_blob": os.path.relpath(value, self.root() / "blobs")})
@@ -501,11 +508,26 @@ class ObjectStore(ObjectReader):
                     )
                 )
                 return
-            except DeltaError as error:
-                if attempt + 1 == _DELTA_IO_ATTEMPTS or (
-                    snapshot is not None and not isinstance(error, CommitFailedError)
+            except (DeltaError, FileNotFoundError) as error:
+                missing_log = (
+                    isinstance(error, FileNotFoundError)
+                    and re.search(
+                        re.escape(str(values / "_delta_log")) + r"/[0-9]{20}\.json",
+                        str(error),
+                    )
+                    is not None
+                )
+                if (
+                    attempt + 1 == _DELTA_IO_ATTEMPTS
+                    or (isinstance(error, FileNotFoundError) and not missing_log)
+                    or (
+                        snapshot is not None
+                        and not isinstance(error, CommitFailedError)
+                        and not missing_log
+                    )
                 ):
                     raise
+                # Refresh after a conflict or a stale view of expired Delta logs.
                 # A lost creation retries as an append under the same rule.
                 try:
                     snapshot = self._retry_io(lambda: DeltaTable(values))

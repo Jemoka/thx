@@ -237,6 +237,7 @@ class WinograndePerplexityEval(PerplexityEvaluation):
 @dataclass
 class FineWebPerplexityEvalConfig:
     num_samples: int = field("eval/fineweb_ppl/num_samples", default=500)
+    split: str = field("eval/fineweb_ppl/split", default="train")
 
 
 @evaluation("fineweb_ppl")
@@ -246,11 +247,11 @@ class FineWebPerplexityEval(PerplexityEvaluation):
     CONFIG = FineWebPerplexityEvalConfig
 
     def __init__(self) -> None:
-        num_samples = configure(self.CONFIG).num_samples
+        cfg = configure(self.CONFIG)
         ds = load_dataset(
             "HuggingFaceFW/fineweb",
             "CC-MAIN-2022-21",
-            split="train",
+            split=cfg.split,
             streaming=True,
         )
         self.items: list[str] = []
@@ -258,7 +259,7 @@ class FineWebPerplexityEval(PerplexityEvaluation):
             text = item.get("text", "")
             if text:
                 self.items.append(text)
-            if len(self.items) >= num_samples:
+            if len(self.items) >= cfg.num_samples:
                 break
 
     @property

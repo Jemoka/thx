@@ -98,6 +98,19 @@ SUPPORTED_CHIPS: dict[str, Chip] = {
         memory=int(96 * 1024**3),
         flops=TheoreticalFLOPS(bfloat16=467.80416, float32=120.0),
     ),
+    # Smaller Ampere cards; leave precision-specific peaks unclaimed.
+    # https://www.nvidia.com/en-au/products/workstations/rtx-a5000/
+    "a5000": Chip(
+        name="a5000",
+        display_name="Nvidia RTX A5000",
+        memory=int(24 * 1024**3),
+    ),
+    # https://www.nvidia.com/en-eu/geforce/graphics-cards/30-series/rtx-3090/
+    "rtx3090": Chip(
+        name="rtx3090",
+        display_name="Nvidia GeForce RTX 3090",
+        memory=int(24 * 1024**3),
+    ),
     # RTX A6000 and RTX 6000 Ada: table 2, dense BF16 with FP32 accumulate.
     # https://images.nvidia.com/aem-dam/en-zz/Solutions/technologies/NVIDIA-ADA-GPU-PROVIZ-Architecture-Whitepaper_1.1.pdf
     "a6000": Chip(

@@ -145,7 +145,7 @@ atomically if absent; `ObjectReader` requires it to exist. Preserve `.id` when
 moving a root: it is the link to its metadata.
 
 `Cluster.metadata` selects a persistent chDB directory or an HTTP(S) ClickHouse
-connection string. Omission selects `~/.thx.v2.chdb`, outside the object root.
+connection string. Omission selects `<root>/objects/values/v2`, under the object directory.
 Embedded connections hold an exclusive filesystem lock until close and fail
 immediately if another connection owns the directory. Concurrent processes,
 including distributed jobs, need a ClickHouse server. In a server URL,

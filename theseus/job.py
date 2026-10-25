@@ -113,6 +113,7 @@ class BasicJob(_BaseJob, Generic[C]):
         project: str | None = None,
         group: str | None = None,
         shard: ShardingPolicy | None = None,
+        metadata: str | None = None,
     ) -> Self:
         spec = ExecutionSpec.local(
             root_dir,
@@ -120,6 +121,7 @@ class BasicJob(_BaseJob, Generic[C]):
             project=project,
             group=group,
             shard=shard,
+            metadata=metadata,
         )
         return cls(spec, base=base)
 

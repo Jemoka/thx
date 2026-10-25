@@ -11,6 +11,7 @@ from theseus.execute import Combobulation, DispatchSpec
 from theseus.job import BasicJob
 from theseus.quick import QuickQuery, init, quick
 from theseus.store import ObjectStore
+from tests.test_store_clickhouse import clickhouse_server
 
 
 @dataclass
@@ -73,8 +74,8 @@ def register_fake_job(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(registry.JOBS, "tests/quickx", FakeJob)
 
 
-def seed_nodes(root: str) -> list[Node]:
-    hardware = ExecutionSpec.local(root).hardware
+def seed_nodes(root: str, metadata_cnx: str | None = None) -> list[Node]:
+    hardware = ExecutionSpec.local(root, metadata=metadata_cnx).hardware
     store = ObjectStore(hardware)
     nodes = [
         Node(name="source", nonce="abcdef", seq=1),
@@ -200,7 +201,7 @@ def test_query_only_session_and_build_guards(tmp_path, monkeypatch) -> None:
     before = current_config()
     with quick() as q:
         assert q.find().all() == []
-        assert not (tmp_path / "objects").exists()
+        assert (tmp_path / "objects" / "values" / "v2").is_dir()
         assert current_config() is before
         with pytest.raises(RuntimeError, match="build"):
             _ = q.config
@@ -439,8 +440,9 @@ def test_build_from_node_passes_overrides_and_keeps_session_on_failure(
     from unittest.mock import Mock
 
     register_fake_job(monkeypatch)
-    seed_nodes(str(tmp_path))
-    with quick(tmp_path) as q:
+    metadata_cnx = str(tmp_path / "restore.chdb")
+    seed_nodes(str(tmp_path), metadata_cnx=metadata_cnx)
+    with quick(tmp_path, metadata_cnx=metadata_cnx) as q:
         q.build(FakeJob, "original")
         q.find().name("source").branch()
         original_config = q.config
@@ -452,6 +454,7 @@ def test_build_from_node_passes_overrides_and_keeps_session_on_failure(
         assert q.config is original_config
         assert current_config() is original_config
         assert restore.call_args.args[1].name == "branch"
+        assert restore.call_args.args[1].hardware.hosts[0].cluster.metadata == metadata_cnx
         assert restore.call_args.kwargs["runtime_cfg"] == overrides
 
 
@@ -598,3 +601,50 @@ def test_checkpoint_selection_only_reads_blob_metadata(tmp_path):
             assert q.config.quick.value == 5
         assert select.call_count == 1
         assert select.call_args.kwargs == {"keys": ["blob"]}
+
+
+class MetadataQuickJob(BasicJob[QuickConfig]):
+    @classmethod
+    def config(cls):
+        return QuickConfig
+
+    def state_init(self):
+        pass
+
+    def state_restore(self, state):
+        pass
+
+    def run(self):
+        self.store.value(self.node, {"value": self.args.value})
+
+
+@pytest.mark.parametrize("backend", ["default", "empty", "path", "server"])
+@pytest.mark.parametrize("entry", ["quick", "init"])
+def test_metadata_connection_reaches_real_job(tmp_path, request, backend, entry):
+    from contextlib import closing
+    from theseus.store import ObjectReader
+
+    metadata_cnx = {
+        "default": None,
+        "empty": "",
+        "path": str(tmp_path / "custom.chdb"),
+    }.get(backend)
+    if backend == "server":
+        metadata_cnx = request.getfixturevalue("clickhouse_server")
+    scope = quick(root_dir=tmp_path, metadata_cnx=metadata_cnx) if entry == "quick" else closing(init(root_dir=tmp_path, metadata_cnx=metadata_cnx))
+    with scope as q:
+        assert q.find().all() == []
+        q.build(MetadataQuickJob, "metadata")
+        job = q.create()
+        assert all(host.cluster.metadata == metadata_cnx for host in job.spec.hardware.hosts)
+        # The live job owns the embedded connection; queries reuse it.
+        assert q.find().store is job.store
+        q()
+        node = job.node
+    reader = ObjectReader.local(tmp_path, metadata=metadata_cnx)
+    try:
+        assert reader.query().node(node).select(keys=["value"]) == [{"value": 1}]
+    finally:
+        reader.close()
+    if backend in {"path", "server"}:
+        assert not (tmp_path / "objects" / "values" / "v2").exists()

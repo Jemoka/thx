@@ -20,7 +20,7 @@ metadata: "chdb:///absolute/path/to/metadata.chdb"
 metadata: "https://USER:PASSWORD@HOST:8443/theseus"
 ```
 
-Choose one. Omit `metadata` to use `~/.thx.v2.chdb`. Local storage allows only
+Choose one. Omit `metadata` to use `<root>/objects/values/v2`. Local storage allows only
 one open connection at a time.
 
 ## 2. Make a ClickHouse DB (remote only)
@@ -59,6 +59,18 @@ uv run theseus submit my-run train.yaml --cluster lab
 
 Workers receive the connection automatically. Theseus creates the tables;
 checkpoint files stay under your existing root.
+
+For a Python session, pass the connection directly:
+
+```python
+from theseus.quick import quick
+
+with quick(root_dir="/path/to/theseus", metadata_cnx="https://USER:PASSWORD@HOST:8443/theseus") as q:
+    nodes = q.find().all()
+```
+
+`init(root_dir=..., metadata_cnx=...)` accepts the same arguments; call `close()`
+when finished. Omit `metadata_cnx` for the root's local database.
 
 Did you use Theseus before [7e732b84](https://review.gerrithub.io/c/Jemoka/theseus/+/1256356)?
 [Migrate your data](../database-migration.md) before submitting.

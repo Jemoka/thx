@@ -109,7 +109,7 @@ from theseus.config import build, _current_config
 from theseus.execute.combobulator import Combobulation, Step
 from theseus.job import RestoreableJob
 from theseus.registry import JOBS
-from theseus.store import ObjectReader, QueryBuilder
+from theseus.store import ObjectReader, ObjectStore, QueryBuilder
 
 
 if TYPE_CHECKING:
@@ -119,9 +119,12 @@ if TYPE_CHECKING:
 class QuickJob:
     """Query a root and optionally configure and run one active job."""
 
-    def __init__(self, root_dir: str | Path | None = None) -> None:
+    def __init__(
+        self, root_dir: str | Path | None = None, *, metadata_cnx: str | None = None
+    ) -> None:
         self._root_dir = str(root_dir or os.environ.get("THESEUS_ROOT") or ".")
-        self._store = ObjectReader.local(self._root_dir)
+        self._metadata_cnx = metadata_cnx
+        self._store = ObjectStore.local(self._root_dir, metadata=metadata_cnx)
         self._instance: Any = None
         self._config: DictConfig | None = None
         self._config_token: Token[Any] | None = None
@@ -176,12 +179,14 @@ class QuickJob:
                 project=project,
                 group=group,
                 shard=self._sharding,
+                metadata=self._metadata_cnx,
             )
             runtime_cfg = OmegaConf.merge(
                 OmegaConf.to_container(self.config, resolve=False),
                 config if config is not None else {},
             )
             instance: RestoreableJob[Any]
+            self._store.close()
             instance, cfg = RestoreableJob.from_node(
                 self.base, spec, runtime_cfg=runtime_cfg, resume=self._resume
             )
@@ -274,6 +279,7 @@ class QuickJob:
             self.base = None
             self._resume = False
             self._sharding = ShardingPolicy()
+            self._store.close()
 
     #### job execution ####
 
@@ -328,6 +334,7 @@ class QuickJob:
         if self._config is None or self._build_args is None:
             raise RuntimeError("Call build(job, name) before creating the job.")
         if self._instance is None:
+            self._store.close()
             self._instance = self._job_cls.local(
                 self._root_dir,
                 base=self.base,
@@ -335,6 +342,7 @@ class QuickJob:
                 project=self._project,
                 group=self._group,
                 shard=self._sharding,
+                metadata=self._metadata_cnx,
             )
             self._instance._resume_required = self._resume
         self._instance.setup(resume=self._resume)
@@ -349,7 +357,9 @@ class QuickJob:
         or resume() before create(). Selection loads checkpoint configuration;
         call build() without a job to construct the saved job after editing it.
         """
-        return QuickQuery(self, self._store)
+        store = getattr(self._instance, "store", self._store)
+        store.start()
+        return QuickQuery(self, store)
 
     def __call__(self) -> Any:
         """Create and run the job with the selected resume mode."""
@@ -403,19 +413,25 @@ class QuickQuery(QueryBuilder):
 
 
 @contextmanager
-def quick(root_dir: str | Path | None = None) -> Generator[QuickJob, None, None]:
+def quick(
+    root_dir: str | Path | None = None, *, metadata_cnx: str | None = None
+) -> Generator[QuickJob, None, None]:
     """Open a query/run session and close its active job on context exit."""
-    session = init(root_dir)
+    session = init(root_dir, metadata_cnx=metadata_cnx)
     try:
         yield session
     finally:
         session.close()
 
 
-def init(root_dir: str | Path | None = None) -> QuickJob:
+def init(
+    root_dir: str | Path | None = None, *, metadata_cnx: str | None = None
+) -> QuickJob:
     """Open a session at root_dir, defaulting to $THESEUS_ROOT or ".".
 
+    metadata_cnx selects a chDB directory or ClickHouse HTTP(S) connection.
+    Omission uses objects/values/v2 under the root.
     Queries are available immediately. Call build(job, name, ...) before editing
     config or executing a job, and close() when finished.
     """
-    return QuickJob(root_dir)
+    return QuickJob(root_dir, metadata_cnx=metadata_cnx)

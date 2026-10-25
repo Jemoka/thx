@@ -31,7 +31,7 @@ class Cluster(BaseModel):
     status: Optional[str] = None  # status directory (defaults to {root}/status)
     objects: Optional[str] = None  # object store (defaults to {root}/objects)
     metadata: Optional[str] = (
-        None  # chDB path or ClickHouse DSN; defaults to ~/.thx.v2.chdb
+        None  # chDB path or ClickHouse DSN; defaults to objects/values/v2
     )
 
     # These launch settings travel in DispatchSpec so a remote bootstrap never
@@ -215,7 +215,9 @@ def match(name: str) -> Optional[Chip]:
     return best_chip
 
 
-def local(root_dir: str, work_dir: str) -> HardwareResult:
+def local(
+    root_dir: str, work_dir: str, *, metadata: str | None = None
+) -> HardwareResult:
     """
     Detect hardware using JAX device information.
     Creates one ClusterMachine per host, with host index matching jax.process_index().
@@ -303,7 +305,7 @@ def local(root_dir: str, work_dir: str) -> HardwareResult:
         total_chips = len(devices)
 
     # Create cluster (paths assumed identical across hosts)
-    cluster = Cluster(name="local", root=root_dir, work=work_dir)
+    cluster = Cluster(name="local", root=root_dir, work=work_dir, metadata=metadata)
 
     # Get current host's actual hostname
     current_process_idx = jax.process_index()

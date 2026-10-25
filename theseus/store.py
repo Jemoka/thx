@@ -88,7 +88,7 @@ class ObjectReader:
     """Query ClickHouse metadata and resolve blobs against an object root.
 
     ``Cluster.metadata`` is a persistent chDB directory/URI or an HTTP(S)
-    ClickHouse DSN. Omission selects ``~/.thx.v2.chdb``. ``ROOT/.id`` identifies
+    ClickHouse DSN. Omission selects ``objects/values/v2`` under the cluster root. ``ROOT/.id`` identifies
     the metadata table and must already exist when opening a reader. Embedded
     connections hold an exclusive filesystem lock until close; use a server for
     concurrent processes.
@@ -98,7 +98,7 @@ class ObjectReader:
         identity = UUID((cluster.root_dir / ".id").read_text().strip())
         self._table = f"values_{identity.hex}"
         self._object_dir = cluster.objects_dir
-        self._metadata = cluster.metadata or str(Path.home() / ".thx.v2.chdb")
+        self._metadata = cluster.metadata or str(self._object_dir / "values" / "v2")
         self._connection_lock = RLock()
         self._file_lock: IO[bytes] | None = None
         self._client: Client | None = None

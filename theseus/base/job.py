@@ -87,8 +87,9 @@ class ExecutionSpec(JobSpec):
         project: str | None = None,
         group: str | None = None,
         shard: ShardingPolicy | None = None,
+        metadata: str | None = None,
     ) -> "ExecutionSpec":
-        hardware = local(root_dir, "-")
+        hardware = local(root_dir, "-", metadata=metadata)
         if hardware.chip is None:
             topology = None
         else:

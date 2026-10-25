@@ -272,13 +272,27 @@ def test_remote_query_retries_are_bounded(tmp_path, clickhouse_server, monkeypat
         store.close()
 
 
-def test_default_metadata_is_outside_object_root(tmp_path):
+def test_default_metadata_is_inside_object_root(tmp_path):
     root = tmp_path / "experiment"
     root.mkdir()
     store = ObjectStore.local(root)
-    assert store._metadata == str(tmp_path / ".thx.v2.chdb")
-    assert (tmp_path / ".thx.v2.chdb").is_dir()
-    assert not (root / "objects" / "values").exists()
+    assert store._metadata == str(root / "objects" / "values" / "v2")
+    assert (root / "objects" / "values" / "v2").is_dir()
+    assert (root / "objects" / "values" / "v2.lock").is_file()
+
+def test_default_database_moves_with_root(tmp_path):
+    root = tmp_path / "original"
+    root.mkdir()
+    store = ObjectStore.local(root)
+    store.value(Node(name="move"), {"value": 7})
+    store.close()
+    moved = tmp_path / "moved"
+    root.rename(moved)
+    reader = ObjectReader.local(moved)
+    try:
+        assert reader.query().select() == [{"value": 7}]
+    finally:
+        reader.close()
 
 def test_root_identity_is_stable_and_namespaces_are_isolated(tmp_path):
     from uuid import UUID
@@ -312,6 +326,7 @@ def test_root_identity_is_not_under_custom_objects_directory(tmp_path):
     store = ObjectStore(hardware)
     assert (tmp_path / ".id").is_file()
     assert not (store.root() / ".id").exists()
+    assert store._metadata == str(store.root() / "values" / "v2")
     store.value(Node(name="custom"), {"value": 1})
     store.close()
     reader = ObjectReader(hardware.hosts[0].cluster)

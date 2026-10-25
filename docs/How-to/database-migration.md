@@ -68,7 +68,7 @@ clusters:
 
 Use the server URL instead for concurrent jobs. Direct Python callers pass the
 same value to `ObjectStore.local(root, metadata=...)` or
-`ObjectReader.local(root, metadata=...)`. Omitting it selects `~/.thx.v2.chdb`;
+`ObjectReader.local(root, metadata=...)`. Omitting it selects `<root>/objects/values/v2`;
 the root's `.id` identifies its table, but does not record the connection string.
 
 Keep `.id` with the root and verify the migrated runs before resuming work.

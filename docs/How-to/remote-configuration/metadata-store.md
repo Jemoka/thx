@@ -70,7 +70,15 @@ with quick(root_dir="/path/to/theseus", metadata_cnx="https://USER:PASSWORD@HOST
 ```
 
 `init(root_dir=..., metadata_cnx=...)` accepts the same arguments; call `close()`
-when finished. Omit `metadata_cnx` for the root's local database.
+when finished. Or set defaults in your shell and use `quick()`:
+
+```bash
+export THESEUS_ROOT="/path/to/theseus"
+export THESEUS_METADATA="https://USER:PASSWORD@HOST:8443/theseus"
+```
+
+An explicit `metadata_cnx` overrides the environment. Set it to `""` to use the
+root's local database instead.
 
 Did you use Theseus before [7e732b84](https://review.gerrithub.io/c/Jemoka/theseus/+/1256356)?
 [Migrate your data](../database-migration.md) before submitting.

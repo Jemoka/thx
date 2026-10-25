@@ -648,3 +648,33 @@ def test_metadata_connection_reaches_real_job(tmp_path, request, backend, entry)
         reader.close()
     if backend in {"path", "server"}:
         assert not (tmp_path / "objects" / "values" / "v2").exists()
+
+
+@pytest.mark.parametrize("entry", ["quick", "init"])
+@pytest.mark.parametrize("override", [None, "explicit", ""])
+def test_metadata_environment_and_explicit_precedence(tmp_path, monkeypatch, entry, override):
+    from contextlib import closing
+    from theseus.store import ObjectReader
+
+    environment = str(tmp_path / "environment.chdb")
+    explicit = str(tmp_path / "explicit.chdb") if override == "explicit" else override
+    expected = environment if override is None else explicit
+    monkeypatch.setenv("THESEUS_ROOT", str(tmp_path))
+    monkeypatch.setenv("THESEUS_METADATA", environment)
+    scope = quick(metadata_cnx=explicit) if entry == "quick" else closing(init(metadata_cnx=explicit))
+    with scope as q:
+        # Resolve the environment once, so queries and execution cannot diverge.
+        monkeypatch.setenv("THESEUS_METADATA", str(tmp_path / "changed.chdb"))
+        q.build(MetadataQuickJob, "environment")
+        job = q.create()
+        assert job.spec.hardware.hosts[0].cluster.metadata == expected
+        q()
+        node = job.node
+    reader = ObjectReader.local(tmp_path, metadata=expected)
+    try:
+        assert reader.query().node(node).select(keys=["value"]) == [{"value": 1}]
+    finally:
+        reader.close()
+    assert not (tmp_path / "changed.chdb").exists()
+    if override is not None:
+        assert not (tmp_path / "environment.chdb").exists()

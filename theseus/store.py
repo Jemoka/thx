@@ -178,12 +178,12 @@ class ObjectReader:
         with self._connection_lock:
             if self._client is None:
                 raise RuntimeError("metadata connection is closed; call start() first")
-            if not self._client.command(f"EXISTS TABLE {self._table}"):
-                return {}
             return {
                 row["name"]: row["type"].removeprefix("Nullable(").removesuffix(")")
                 for row in self._query_arrow(
-                    f"DESCRIBE TABLE {self._table}"
+                    "SELECT name, type FROM system.columns "
+                    "WHERE database = currentDatabase() AND table = {table:String}",
+                    params={"table": self._table},
                 ).to_pylist()
             }
 
@@ -789,7 +789,7 @@ class QueryBuilder:
         ``.where("eval/score", ">", 0.8).all()`` to return matching nodes.
 
     Args:
-        store: Object store or reader containing the Parquet value parts to query.
+        store: Object store or reader containing the metadata table to query.
         serialized: Optional previously serialized query state.
     """
 
@@ -849,7 +849,7 @@ class QueryBuilder:
         Returns:
             This builder, for continued chaining.
         """
-        self._filters.append(f"_x_name = {self._parameter(name)}")
+        self._filters.append(f"ifNull(_x_name, '') = {self._parameter(name)}")
         return self
 
     def nonce(self, nonce: str) -> Self:
@@ -959,6 +959,14 @@ class QueryBuilder:
                 name=run if run is not None else wildcard,
             )
         )
+        if wildcard not in name:
+            return self.name(name)
+        prefix = name.split(wildcard, 1)[0]
+        if prefix:
+            self._filters.append(
+                f"startsWith(ifNull(_x_name, ''), {self._parameter(prefix)})"
+            )
+        # Keep the regex for component boundaries and non-leading wildcards.
         pattern = re.escape(name).replace(re.escape(wildcard), ".*")
         self._filters.append(f"match(_x_name, {self._parameter(f'^{pattern}$')})")
         return self
@@ -1133,17 +1141,19 @@ class QueryBuilder:
         physical = {"_x_blob" if key == "blob" else key for key in requested or ()}
         if physical - columns:
             return None
-        if any(key not in columns for key, _, _ in self._predicates):
-            return None
-        if self._jobs and "_x_job" not in columns:
-            return None
-        if self._artifact and "_x_record" not in columns:
-            return None
-        if self._checkpoint and "_x_checkpoint" not in columns:
-            return None
-        if self._execution is not None and "_x_execution" not in columns:
-            return None
-        if self._tag is not None and "_x_tag" not in columns:
+        required = {key for key, _, _ in self._predicates}
+        required.update(
+            key
+            for key, enabled in (
+                ("_x_job", bool(self._jobs)),
+                ("_x_record", self._artifact),
+                ("_x_checkpoint", self._checkpoint),
+                ("_x_execution", self._execution is not None),
+                ("_x_tag", self._tag is not None),
+            )
+            if enabled
+        )
+        if required - columns:
             return None
 
         filters = list(self._filters)
@@ -1151,25 +1161,40 @@ class QueryBuilder:
             filters.append(f"_x_execution = {self._parameter(self._execution)}")
         if self._tag is not None:
             filters.append(f"_x_tag = {self._parameter(self._tag)}")
-        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
-
         if self._finished is not None:
-            scope_finished = False
-            if "_x_finished" in columns:
-                scope_finished = bool(
-                    self.store._query_arrow(
-                        f"""
-                        SELECT countIf(_x_finished = true) > 0 AS finished
-                        FROM {source}
-                        {where_sql}
-                        """,
-                        params=self._params,
-                    )
-                    .column("finished")[0]
-                    .as_py()
+            if "_x_finished" not in columns:
+                if self._finished:
+                    return None
+            else:
+                finished = self._select_sql(
+                    source, ["countIf(_x_finished = true) > 0"], filters, grouped=False
                 )
-            if scope_finished != self._finished:
-                return None
+                filters.append(f"({finished}) = {int(self._finished)}")
+
+        scope = list(filters)
+        identity = "ifNull(_x_name, ''), ifNull(_x_nonce, ''), ifNull(_x_seq, 0)"
+        # Find candidate identities from sparse events, then retain every scoped
+        # event for those identities. HAVING still decides the resolved result.
+        candidate = None
+        if self._checkpoint:
+            candidate = "_x_checkpoint = true"
+        elif self._artifact:
+            candidate = "_x_record = true"
+        elif self._jobs:
+            candidate = f"_x_job = {self._jobs[0]}"
+        elif self._predicates:
+            key, operator, parameter = self._predicates[0]
+            identifier = self._identifier(key)
+            candidate = (
+                f"{identifier} {operator} {parameter}"
+                if operator is not None
+                else f"{identifier} IS NOT NULL"
+            )
+        if candidate:
+            candidates = self._select_sql(
+                source, [identity], [*filters, candidate], grouped=False
+            )
+            filters.append(f"({identity}) IN ({candidates})")
 
         priority = "tuple(-__x_prc_idx, __x_write, __x_event)"
         having: list[str] = []
@@ -1190,7 +1215,6 @@ class QueryBuilder:
         for job in self._jobs:
             having.append(f"countIf(_x_job = {job}) > 0")
 
-        having_sql = f"HAVING {' AND '.join(having)}" if having else ""
         order_sql = "_x_name, _x_nonce, _x_seq"
         limit_sql = ""
         if self._latest:
@@ -1203,6 +1227,16 @@ class QueryBuilder:
                 f"{lineage_write} OVER (PARTITION BY _x_name, _x_nonce), "
                 "_x_seq, _x_name, _x_nonce"
             )
+        elif self._sorting is not None and self._sorting[0] in {
+            "_x_name",
+            "_x_nonce",
+            "_x_seq",
+        }:
+            identifier = self._identifier(self._sorting[0])
+            direction = "ASC" if self._sorting[1] else "DESC"
+            order_sql = (
+                f"{identifier} {direction} NULLS LAST, _x_name, _x_nonce, _x_seq"
+            )
         elif self._sorting is not None and self._sorting[0] in columns:
             identifier = self._identifier(self._sorting[0])
             direction = "ASC" if self._sorting[1] else "DESC"
@@ -1214,20 +1248,12 @@ class QueryBuilder:
         selected = ["_x_name", "_x_nonce", "_x_seq"]
         result_columns = list(selected)
         if read:
-            user_columns = {
+            folded_columns = sorted(
                 key
-                for key in columns
-                if not key.startswith("_x_") and (requested is None or key in requested)
-            }
-            raw_columns = {
-                key
-                for key in columns
-                if key.startswith("_x_")
-                and key not in {"_x_name", "_x_nonce", "_x_seq", "_x_blob"}
-                and raw
+                for key in columns - set(selected) - {"_x_blob"}
+                if (raw or not key.startswith("_x_"))
                 and (requested is None or key in requested)
-            }
-            folded_columns = sorted(user_columns | raw_columns)
+            )
             if "_x_blob" in columns and (
                 requested is None or {"blob", "_x_blob"} & requested
             ):
@@ -1238,7 +1264,58 @@ class QueryBuilder:
                     f"APPLY(value -> argMaxIf(value, {priority}, value IS NOT NULL))"
                 )
                 result_columns.extend(folded_columns)
-        sql = f"""
+        grouped = True
+        if self._latest:
+            # Without node-level predicates, the newest event identifies the newest
+            # node directly. Otherwise resolve candidates before reading wide values.
+            winner_order = (
+                order_sql
+                if having
+                else "__x_write DESC, _x_seq DESC, _x_name, _x_nonce"
+            )
+            if len(result_columns) > 3:
+                winner = self._select_sql(
+                    source,
+                    [identity],
+                    filters,
+                    having,
+                    winner_order,
+                    "LIMIT 1",
+                    grouped=bool(having),
+                )
+                filters = [*scope, f"({identity}) IN ({winner})"]
+                having = []
+            elif not having:
+                grouped = False
+                order_sql = winner_order
+
+        sql = self._select_sql(
+            source, selected, filters, having, order_sql, limit_sql, grouped=grouped
+        )
+        sql += " SETTINGS prefer_column_name_to_alias = 1"
+        table = self.store._query_arrow(sql, params=self._params)
+        # APPLY names outputs after their expressions; restore the public keys.
+        return table.rename_columns(result_columns)
+
+    #### helper methods ####
+
+    @staticmethod
+    def _select_sql(
+        source: str,
+        selected: Sequence[str],
+        filters: Sequence[str],
+        having: Sequence[str] = (),
+        order_sql: str = "",
+        limit_sql: str = "",
+        *,
+        grouped: bool = True,
+    ) -> str:
+        """Compile candidate, winner, and value reads with the same scope rules."""
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        having_sql = f"HAVING {' AND '.join(having)}" if having else ""
+        group_sql = "GROUP BY _x_name, _x_nonce, _x_seq" if grouped else ""
+        order_sql = f"ORDER BY {order_sql}" if order_sql else ""
+        return f"""
             SELECT {", ".join(selected)}
             FROM (
                 SELECT *, _x_prc_idx AS __x_prc_idx,
@@ -1246,17 +1323,11 @@ class QueryBuilder:
                 FROM {source}
             )
             {where_sql}
-            GROUP BY _x_name, _x_nonce, _x_seq
+            {group_sql}
             {having_sql}
-            ORDER BY {order_sql}
+            {order_sql}
             {limit_sql}
-            SETTINGS prefer_column_name_to_alias = 1
-            """
-        table = self.store._query_arrow(sql, params=self._params)
-        # APPLY names outputs after their expressions; restore the public keys.
-        return table.rename_columns(result_columns)
-
-    #### helper methods ####
+        """
 
     @staticmethod
     def _identifier(key: str) -> str:

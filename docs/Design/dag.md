@@ -233,6 +233,18 @@ such as `.where("train/loss", "<=", 2.5)` are applied to the grouped result, so
 they use the same resolved field value that selection returns. Checkpoint and
 artifact filters test whether the group contains their respective markers.
 
+Queries first identify candidate nodes from a checkpoint, artifact, job marker,
+or value predicate, then fold all scoped records for those identities. This keeps
+sparse fields together and still checks predicates against resolved values.
+`latest().select()` selects the winning identity before aggregating its requested
+fields. Without node-level predicates, the newest event identifies that winner
+directly. These stages run in one SQL statement; each query reads the current
+schema so newly added columns remain visible.
+
+`finished()` checks completion across the identity/execution/tag scope, before
+value and checkpoint filters. The completion marker can belong to another node
+in that scope.
+
 `.all()` returns node identities. `.select()` returns folded values;
 `.select(return_nodes=True)` pairs each row with its identity. `keys=[...]` limits
 the returned fields, while `keys=None` returns all available user fields.

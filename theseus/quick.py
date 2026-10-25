@@ -123,8 +123,12 @@ class QuickJob:
         self, root_dir: str | Path | None = None, *, metadata_cnx: str | None = None
     ) -> None:
         self._root_dir = str(root_dir or os.environ.get("THESEUS_ROOT") or ".")
-        self._metadata_cnx = metadata_cnx
-        self._store = ObjectStore.local(self._root_dir, metadata=metadata_cnx)
+        self._metadata_cnx = (
+            metadata_cnx
+            if metadata_cnx is not None
+            else os.environ.get("THESEUS_METADATA")
+        )
+        self._store = ObjectStore.local(self._root_dir, metadata=self._metadata_cnx)
         self._instance: Any = None
         self._config: DictConfig | None = None
         self._config_token: Token[Any] | None = None
@@ -430,7 +434,8 @@ def init(
     """Open a session at root_dir, defaulting to $THESEUS_ROOT or ".".
 
     metadata_cnx selects a chDB directory or ClickHouse HTTP(S) connection.
-    Omission uses objects/values/v2 under the root.
+    Omission reads $THESEUS_METADATA, then defaults to objects/values/v2 under
+    the root. An explicit empty string selects the root-local default.
     Queries are available immediately. Call build(job, name, ...) before editing
     config or executing a job, and close() when finished.
     """

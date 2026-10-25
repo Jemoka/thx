@@ -1,6 +1,6 @@
 """Append-only object storage for Theseus experiment nodes.
 
-Scalar metadata is written asynchronously into Delta Lake, while blobs are exposed as
+Scalar metadata is written asynchronously into ClickHouse, while blobs are exposed as
 directories whose relative locations are recorded in the same metadata stream.
 ``RecordStore`` adds deliberately simple, process-0-only MessagePack artifacts; it
 is not a checkpointing implementation. Stateful jobs should use
@@ -8,64 +8,61 @@ is not a checkpointing implementation. Stateful jobs should use
 """
 
 import errno
+import fcntl
 import os
 import re
 from base64 import b64encode
 from contextlib import contextmanager
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Lock, Thread
+from tempfile import NamedTemporaryFile
+from threading import Lock, RLock, Thread
 from time import monotonic, sleep, time_ns
 from typing import (
     Any,
-    Callable,
     Iterator,
+    IO,
     Literal,
     Mapping,
     Self,
     Sequence,
-    TypeVar,
     cast,
     overload,
 )
 from typing_extensions import TypedDict
-from uuid import uuid4
+from uuid import UUID, uuid4
+from urllib.parse import unquote, urlsplit
 
-import chdb
+import clickhouse_connect
+from clickhouse_connect.driver.client import Client
+from clickhouse_connect.driver.exceptions import OperationalError
 import jax
 import pyarrow as pa
-from deltalake import CommitProperties, DeltaTable, write_deltalake
-from deltalake.exceptions import CommitFailedError, DeltaError, TableNotFoundError
 from flax import serialization
-from loguru import logger
 
 from theseus.base import JobSpec, Node, PyTree
-from theseus.base.hardware import HardwareResult, local as local_hardware
+from theseus.base.hardware import Cluster, HardwareResult, local as local_hardware
 
 
 _VALUE_BATCH_SIZE = 4096
 _VALUE_FLUSH_SECONDS = 30.0
-_DELTA_IO_ATTEMPTS = 3
-_DELTA_IO_RETRY_SECONDS = 0.25
-_IOResult = TypeVar("_IOResult")
-_chdb_query = cast(Callable[..., pa.Table], chdb.query)
-_METADATA_TYPES: dict[str, pa.DataType] = {
-    "_x_blob": pa.string(),
-    "_x_checkpoint": pa.bool_(),
-    "_x_execution": pa.string(),
-    "_x_event": pa.string(),
-    "_x_finished": pa.bool_(),
-    "_x_job": pa.string(),
-    "_x_name": pa.string(),
-    "_x_nonce": pa.string(),
-    "_x_parent": pa.string(),
-    "_x_prc_idx": pa.int64(),
-    "_x_record": pa.bool_(),
-    "_x_seq": pa.int64(),
-    "_x_tag": pa.string(),
-    "_x_timestamp": pa.int64(),
-    "_x_write": pa.int64(),
+_METADATA_TYPES: dict[str, str] = {
+    "_x_blob": "String",
+    "_x_checkpoint": "Bool",
+    "_x_execution": "String",
+    "_x_event": "String",
+    "_x_finished": "Bool",
+    "_x_job": "String",
+    "_x_name": "String",
+    "_x_nonce": "String",
+    "_x_parent": "String",
+    "_x_prc_idx": "Int64",
+    "_x_record": "Bool",
+    "_x_seq": "Int64",
+    "_x_tag": "String",
+    "_x_timestamp": "Int64",
+    "_x_write": "Int64",
 }
 
 ValueRow = dict[str, float | int | str | bool | Path | None]
@@ -88,98 +85,124 @@ class SerializedQuery(TypedDict):
 
 
 class ObjectReader:
-    """Read an object store without initializing its write path.
+    """Query ClickHouse metadata and resolve blobs against an object root.
 
-    ``values_dir`` may point at a local mirror of the complete Delta table.
-    Blob paths still resolve against the original object-store root.
+    ``Cluster.metadata`` is a persistent chDB directory/URI or an HTTP(S)
+    ClickHouse DSN. Omission selects ``~/.thx.v2.chdb``. ``ROOT/.id`` identifies
+    the metadata table and must already exist when opening a reader. Embedded
+    connections hold an exclusive filesystem lock until close; use a server for
+    concurrent processes.
     """
 
-    def __init__(self, object_dir: str | Path, values_dir: str | Path | None = None):
-        self._object_dir = Path(object_dir)
-        self._values_dir = (
-            Path(values_dir) if values_dir is not None else self._object_dir / "values"
-        )
+    def __init__(self, cluster: Cluster):
+        identity = UUID((cluster.root_dir / ".id").read_text().strip())
+        self._table = f"values_{identity.hex}"
+        self._object_dir = cluster.objects_dir
+        self._metadata = cluster.metadata or str(Path.home() / ".thx.v2.chdb")
+        self._connection_lock = RLock()
+        self._file_lock: IO[bytes] | None = None
+        self._client: Client | None = None
+        ObjectReader.start(self)
 
     @classmethod
-    def local(
-        cls,
-        root_dir: str | Path,
-    ) -> Self:
-        """Open the object data below a local Theseus root for reading."""
-        return cls(Path(root_dir) / "objects")
+    def local(cls, root_dir: str | Path, metadata: str | None = None) -> Self:
+        """Read a local object root using the selected metadata connection."""
+        return cls(
+            Cluster(name="local", root=str(root_dir), work="-", metadata=metadata)
+        )
+
+    def start(self) -> None:
+        """Open a connection, failing immediately if an embedded path is owned."""
+        with self._connection_lock:
+            if self._client is not None:
+                return
+            options: dict[str, Any] = {"dsn": self._metadata}
+            parsed = urlsplit(self._metadata)
+            if parsed.scheme in {"", "chdb"}:
+                if parsed.scheme and (parsed.netloc or parsed.query or parsed.fragment):
+                    raise ValueError(
+                        "embedded metadata must be a persistent chdb:///path"
+                    )
+                path = Path(unquote(parsed.path) if parsed.scheme else self._metadata)
+                path = path.expanduser().resolve()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                lock = Path(str(path) + ".lock").open("a+b")
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    lock.close()
+                    raise RuntimeError(
+                        f"metadata database {path} is already open; "
+                        "configure Cluster.metadata with a ClickHouse server "
+                        "for concurrent processes"
+                    ) from None
+                self._file_lock = lock
+                options = {"interface": "chdb", "path": str(path)}
+            elif parsed.scheme not in {"http", "https"}:
+                raise ValueError(
+                    "metadata must be a chDB path or an HTTP(S) ClickHouse DSN"
+                )
+            else:
+                options["query_retries"] = 2
+            try:
+                if self._file_lock is not None:
+                    path.mkdir(parents=True, exist_ok=True)
+                self._client = clickhouse_connect.get_client(**options)
+            except Exception:
+                if self._file_lock is not None:
+                    self._file_lock.close()
+                    self._file_lock = None
+                raise
+
+    def close(self) -> None:
+        """Close the connection and release embedded database ownership."""
+        with self._connection_lock:
+            try:
+                if self._client is not None:
+                    self._client.close()
+            finally:
+                self._client = None
+                if self._file_lock is not None:
+                    self._file_lock.close()
+                    self._file_lock = None
 
     def query(self, serialized: SerializedQuery | None = None) -> "QueryBuilder":
         """Return a fresh query builder for this reader."""
         return QueryBuilder(self, serialized)
 
     def root(self) -> Path:
-        """Return the original object-store root used to resolve blob paths."""
+        """Return the object-store root used to resolve blob paths."""
         return self._object_dir
 
-    def values(self) -> Path:
-        """Return the directory containing the Delta value table."""
-        return self._values_dir
+    def _schema(self) -> dict[str, str]:
+        with self._connection_lock:
+            if self._client is None:
+                raise RuntimeError("metadata connection is closed; call start() first")
+            if not self._client.command(f"EXISTS TABLE {self._table}"):
+                return {}
+            return {
+                row["name"]: row["type"].removeprefix("Nullable(").removesuffix(")")
+                for row in self._query_arrow(
+                    f"DESCRIBE TABLE {self._table}"
+                ).to_pylist()
+            }
 
     def _snapshot(self) -> tuple[str, set[str]] | None:
-        """Bind chDB to one committed schema and file set, without inference."""
-        try:
-            table = self._retry_io(lambda: DeltaTable(self.values()))
-        except TableNotFoundError:
-            return None
-        schema = pa.schema(self._retry_io(table.schema).to_arrow())
-        types = {
-            pa.bool_(): "Bool",
-            pa.int64(): "Int64",
-            pa.float64(): "Float64",
-            pa.string(): "String",
-        }
-        structure = ", ".join(
-            f"{QueryBuilder._identifier(field.name)} Nullable({types[field.type]})"
-            for field in schema
-        )
-        paths = ", ".join(
-            f"base64Decode('{b64encode(path.encode()).decode()}')"
-            for path in self._retry_io(table.file_uris)
-        )
-        if not paths:
-            return None
-        encoded = b64encode(structure.encode()).decode()
-        return f"file([{paths}], Parquet, base64Decode('{encoded}'))", set(schema.names)
+        columns = set(self._schema())
+        return (self._table, columns) if columns else None
 
-    @staticmethod
-    def _query_arrow(sql: str, params: dict[str, Any] | None = None) -> pa.Table:
-        # The parser limit must be set before parsing the SELECT itself.
-        return _chdb_query(
-            f"SET max_query_size = {max(262144, len(sql.encode()) + 1)}; {sql}",
-            "ArrowTable",
-            params=params,
-        )
-
-    @staticmethod
-    def _retry_io(operation: Callable[[], _IOResult]) -> _IOResult:
-        for attempt in range(_DELTA_IO_ATTEMPTS):
-            try:
-                return operation()
-            except OSError as error:
-                message = str(error).lower()
-                transient = error.errno in {
-                    errno.EIO,
-                    errno.ESTALE,
-                    errno.ETIMEDOUT,
-                    errno.ECONNRESET,
-                } or any(
-                    marker in message
-                    for marker in (
-                        "input/output error",
-                        "stale file handle",
-                        "connection timed out",
-                        "connection reset",
-                    )
-                )
-                if not transient or attempt + 1 == _DELTA_IO_ATTEMPTS:
-                    raise
-                sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
-        raise AssertionError("unreachable")
+    def _query_arrow(self, sql: str, params: dict[str, Any] | None = None) -> pa.Table:
+        with self._connection_lock:
+            if self._client is None:
+                raise RuntimeError("metadata connection is closed; call start() first")
+            return cast(
+                pa.Table,
+                self._client.query_arrow(
+                    sql,
+                    parameters=params,
+                    settings={"max_query_size": max(262144, len(sql.encode()) + 1024)},
+                ),
+            )
 
     def parents(self, node: Node) -> list[Node]:
         """Return the distinct direct parents recorded for an exact node."""
@@ -210,10 +233,11 @@ class ObjectReader:
 class ObjectStore(ObjectReader):
     """Store blobs and scalar metadata associated with experiment DAG nodes.
 
-    Constructing a store immediately starts its asynchronous Delta writer. Values
+    Constructing a store immediately starts its asynchronous ClickHouse writer. Values
     become queryable after a size- or time-based flush, or after :meth:`close` drains
-    the writer. Each JAX process may write to the shared store; query conflict
-    resolution gives lower process indices precedence.
+    the writer. Concurrent processes require a ClickHouse server; query conflict
+    resolution gives lower process indices precedence. A root's stable ``.id``
+    is created atomically on its first store construction.
 
     Args:
         hardware: Hardware allocation whose current process host determines the
@@ -229,7 +253,24 @@ class ObjectStore(ObjectReader):
         tag: str | None = None,
     ) -> None:
         self.hardware = hardware
-        super().__init__(hardware.hosts[jax.process_index()].cluster.objects_dir)
+        cluster = hardware.hosts[jax.process_index()].cluster
+        identity = cluster.root_dir / ".id"
+        if not identity.exists():
+            # Publish complete contents without replacing a competing creator's ID.
+            with NamedTemporaryFile(dir=identity.parent, prefix=".id.") as pending:
+                pending.write(uuid4().hex.encode())
+                pending.flush()
+                os.fsync(pending.fileno())
+                try:
+                    os.link(pending.name, identity)
+                except FileExistsError:
+                    pass
+                directory = os.open(identity.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+        super().__init__(cluster)
         self.execution_id = execution_id
         self.tag = tag
         self.buffer: Queue[ValueRow | None] = Queue()
@@ -240,64 +281,25 @@ class ObjectStore(ObjectReader):
         self.start()
 
     @classmethod
-    def local(cls, root_dir: str | Path) -> Self:
-        """Open an object store rooted on the local machine.
-
-        Args:
-            root_dir: Local Theseus root; object data lives under ``objects``.
-
-        Returns:
-            A started object store using locally detected hardware.
-        """
-        return cls(local_hardware(str(root_dir), "-"))
-
-    @classmethod
-    def compact(cls, root_dir: str | Path) -> dict[str, Any] | None:
-        """Compact ROOT/objects/values without starting a writer or vacuuming.
-
-        Reload the table after concurrent commit conflicts. An absent table
-        is a no-op; obsolete files remain available to existing readers.
-        """
-        values = Path(root_dir) / "objects" / "values"
-        for attempt in range(_DELTA_IO_ATTEMPTS):
-            try:
-                return cast(
-                    dict[str, Any],
-                    cls._retry_io(lambda: DeltaTable(values).optimize.compact()),
-                )
-            except TableNotFoundError:
-                return None
-            except CommitFailedError:
-                if attempt + 1 == _DELTA_IO_ATTEMPTS:
-                    raise
-                sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
-        raise AssertionError("unreachable")
+    def local(cls, root_dir: str | Path, metadata: str | None = None) -> Self:
+        """Open a local store using a persistent chDB path or ClickHouse DSN."""
+        hardware = local_hardware(str(root_dir), "-")
+        hardware.hosts[0].cluster.metadata = metadata
+        return cls(hardware)
 
     def close(self) -> None:
-        """Commit queued values, stop the writer, and compact the value table.
-
-        A successfully closed store may be restarted with :meth:`start`.
-        Compaction failures are logged without failing committed writes.
-        Closing never vacuums files needed by existing readers.
-
-        Raises:
-            RuntimeError: If the background writer failed while producing a
-                Delta commit. The original exception is available as the cause.
-        """
-        if self.thread is None:
-            return
-
-        self.buffer.put(None)
-        self.thread.join()
-        self.thread = None
-
-        self._raise_writer_error()
-        try:
-            self.compact(self.root().parent)
-        except Exception as error:
-            logger.warning(
-                "STORE | value compaction failed for {}: {}", self.values(), error
-            )
+        """Drain queued values and release the connection, including on failure."""
+        with self._write_lock:
+            if self.thread is None:
+                super().close()
+                return
+            self.buffer.put(None)
+            try:
+                self.thread.join()
+                self._raise_writer_error()
+            finally:
+                self.thread = None
+                super().close()
 
     #### public writes ####
 
@@ -378,43 +380,51 @@ class ObjectStore(ObjectReader):
         self._raise_writer_error()
         self._validate_values(kv)
         with self._write_lock:
+            if self.thread is None:
+                raise RuntimeError("object store is closed")
             self._write_index = max(self._write_index + 1, time_ns())
             write_index = self._write_index
 
-        row: ValueRow = dict(kv)
-        row.update(
-            {
-                "_x_name": node.name,
-                "_x_nonce": node.nonce,
-                "_x_prc_idx": jax.process_index(),
-                "_x_seq": node.seq,
-                "_x_parent": node.parent,
-                "_x_execution": self.execution_id,
-                "_x_event": uuid4().hex,
-                "_x_tag": self.tag,
-                "_x_timestamp": write_index,
-                "_x_write": write_index,
-            }
-        )
-        self.buffer.put(row)
+            row: ValueRow = dict(kv)
+            row.update(
+                {
+                    "_x_name": node.name,
+                    "_x_nonce": node.nonce,
+                    "_x_prc_idx": jax.process_index(),
+                    "_x_seq": node.seq,
+                    "_x_parent": node.parent,
+                    "_x_execution": self.execution_id,
+                    "_x_event": uuid4().hex,
+                    "_x_tag": self.tag,
+                    "_x_timestamp": write_index,
+                    "_x_write": write_index,
+                }
+            )
+            self.buffer.put(row)
 
     def start(self) -> None:
-        """Start the asynchronous Delta writer if it is not already running.
-
-        ``ObjectStore`` calls this method during construction. It remains public so
-        a successfully closed store can be reused.
-
-        Raises:
-            RuntimeError: If a writer from an earlier lifecycle failed.
-        """
+        """Open the metadata connection and start the batched writer."""
         self._raise_writer_error()
-        if self.thread is not None:
-            return
-
-        values = self.values()
-        values.mkdir(parents=True, exist_ok=True)
-        self.thread = Thread(target=self._flush_values, args=(values,), daemon=True)
-        self.thread.start()
+        with self._write_lock:
+            if self.thread is not None:
+                return
+            super().start()
+            assert self._client is not None
+            columns = ", ".join(
+                f"{QueryBuilder._identifier(name)} Nullable({kind})"
+                for name, kind in _METADATA_TYPES.items()
+            )
+            try:
+                self._client.command(
+                    f"CREATE TABLE IF NOT EXISTS {self._table} ({columns}) "
+                    "ENGINE = MergeTree ORDER BY "
+                    "(ifNull(_x_name, ''), ifNull(_x_nonce, ''), ifNull(_x_seq, 0))"
+                )
+            except Exception:
+                super().close()
+                raise
+            self.thread = Thread(target=self._flush_values, daemon=True)
+            self.thread.start()
 
     #### private methods ####
 
@@ -429,7 +439,7 @@ class ObjectStore(ObjectReader):
                     f"unsupported value type {type(value)!r} for key {key!r}"
                 )
 
-    def _flush_values(self, values: Path) -> None:
+    def _flush_values(self) -> None:
         rows: list[ValueRow] = []
         deadline = monotonic() + _VALUE_FLUSH_SECONDS
 
@@ -438,129 +448,172 @@ class ObjectStore(ObjectReader):
                 try:
                     row = self.buffer.get(timeout=max(0.0, deadline - monotonic()))
                 except Empty:
-                    self._write_values(values, rows)
-                    rows.clear()
-                    deadline = monotonic() + _VALUE_FLUSH_SECONDS
-                    continue
+                    row = None
+                    closing = False
+                else:
+                    closing = row is None
+                    if row is not None:
+                        rows.append(row)
+                        if len(rows) < _VALUE_BATCH_SIZE:
+                            continue
 
-                if row is None:
-                    self._write_values(values, rows)
+                # Keep the same events across retries, including an ambiguous insert.
+                for attempt in range(3):
+                    try:
+                        self._write_values(rows)
+                        break
+                    except (OSError, OperationalError) as error:
+                        transient = (
+                            isinstance(error, OSError)
+                            and error.errno
+                            in {
+                                errno.EIO,
+                                errno.EINTR,
+                                errno.ESTALE,
+                                errno.ETIMEDOUT,
+                                errno.ECONNRESET,
+                                errno.ECONNREFUSED,
+                                errno.EPIPE,
+                            }
+                        ) or (
+                            isinstance(error, OperationalError)
+                            and any(
+                                marker in str(error).lower()
+                                for marker in (
+                                    "timed out",
+                                    "timeout",
+                                    "connection reset",
+                                    "connection refused",
+                                    "connection aborted",
+                                    "remote end closed",
+                                    "failed to read response data",
+                                )
+                            )
+                        )
+                        if not transient or attempt == 2:
+                            raise
+                        sleep(0.25 * 2**attempt)
+                rows.clear()
+                deadline = monotonic() + _VALUE_FLUSH_SECONDS
+                if closing:
                     return
-
-                rows.append(row)
-                if len(rows) >= _VALUE_BATCH_SIZE:
-                    self._write_values(values, rows)
-                    rows.clear()
-                    deadline = monotonic() + _VALUE_FLUSH_SECONDS
         except Exception as error:
             self.error = error
 
-    def _write_values(self, values: Path, rows: list[ValueRow]) -> None:
+    def _write_values(self, rows: list[ValueRow]) -> None:
         if not rows:
             return
-        names = sorted({name for row in rows for name in row})
-        try:
-            snapshot = self._retry_io(lambda: DeltaTable(values))
-        except TableNotFoundError:
-            snapshot = None
-        types = dict(_METADATA_TYPES)
-        if snapshot is not None:
-            types.update(
-                {
-                    f.name: f.type
-                    for f in pa.schema(self._retry_io(snapshot.schema).to_arrow())
+        with self._connection_lock:
+            schema = self._schema()
+            columns: dict[str, str] = {}
+            data = []
+            for name in sorted({name for row in rows for name in row}):
+                values = [row.get(name) for row in rows]
+                kinds = {
+                    "String"
+                    if isinstance(value, str)
+                    else "Bool"
+                    if isinstance(value, bool)
+                    else "Int64"
+                    if isinstance(value, Integral)
+                    else "Float64"
+                    for value in values
+                    if value is not None
                 }
-            )
-        columns = {}
-        for name in names:
-            scalars = [pa.scalar(row.get(name)) for row in rows]
-            inferred = pa.null()
-            for scalar in scalars:
-                inferred = self._lub(inferred, scalar.type)
-            target = types.get(name, inferred)
-            if pa.types.is_null(target):
-                raise TypeError(f"cannot infer type of all-null column {name!r}")
-            if self._lub(target, inferred) != target and not (
-                pa.types.is_integer(target) and pa.types.is_floating(inferred)
-            ):
-                raise TypeError(
-                    f"column {name!r} has fixed type {target}, got {inferred}"
+                if "String" in kinds:
+                    inferred = "String"
+                elif kinds <= {"Int64", "Float64"}:
+                    inferred = "Float64" if "Float64" in kinds else "Int64"
+                elif kinds == {"Bool"}:
+                    inferred = "Bool"
+                else:
+                    raise TypeError(f"incompatible scalar types for column {name!r}")
+                target = schema.get(name, _METADATA_TYPES.get(name))
+                if target is None:
+                    if not kinds:
+                        raise TypeError(
+                            f"cannot infer type of all-null column {name!r}"
+                        )
+                    target = inferred
+                converted: list[float | int | str | bool | None] = []
+                for value in values:
+                    if value is None:
+                        converted.append(None)
+                        continue
+                    if target == "String":
+                        converted.append(
+                            str(value).lower()
+                            if isinstance(value, bool)
+                            else str(value)
+                        )
+                        continue
+                    if isinstance(value, (str, Path)) or isinstance(value, bool) != (
+                        target == "Bool"
+                    ):
+                        raise TypeError(
+                            f"column {name!r} has fixed type {target}, got {type(value).__name__}"
+                        )
+                    if target == "Bool":
+                        converted.append(value)
+                    elif target == "Int64":
+                        number = int(value)
+                        if number != value or not -(2**63) <= number < 2**63:
+                            raise TypeError(
+                                f"unsafe Int64 conversion for column {name!r}: {value}"
+                            )
+                        converted.append(number)
+                    elif target == "Float64":
+                        if isinstance(value, Integral) and abs(value) > 2**53:
+                            raise TypeError(
+                                f"unsafe Float64 conversion for column {name!r}: {value}"
+                            )
+                        converted.append(float(value))
+                    else:
+                        raise TypeError(f"unsupported column type {target!r}")
+                columns[name] = target
+                data.append(converted)
+            assert self._client is not None
+            additions = [
+                f"ADD COLUMN IF NOT EXISTS {QueryBuilder._identifier(name)} "
+                f"Nullable({kind})"
+                for name, kind in columns.items()
+                if name not in schema
+            ]
+            if additions:
+                self._client.command(
+                    f"ALTER TABLE {self._table} {', '.join(additions)}",
+                    settings={
+                        "max_query_size": max(
+                            262144,
+                            sum(
+                                len(name.encode()) * 2 + 128
+                                for name in schema.keys() | columns.keys()
+                            )
+                            + 4096,
+                        )
+                    },
                 )
-            # Safe casts reject truncation, overflow, and inexact int -> float.
-            columns[name] = pa.array(
-                [s.cast(target, safe=True) for s in scalars], type=target
+                # IF NOT EXISTS does not validate a concurrent creator's type.
+                schema = self._schema()
+                for name, kind in columns.items():
+                    if schema[name] != kind:
+                        raise TypeError(
+                            f"column {name!r} has fixed type {schema[name]}, got {kind}"
+                        )
+            self._client.insert(
+                self._table,
+                data,
+                column_names=list(columns),
+                column_type_names=[f"Nullable({kind})" for kind in columns.values()],
+                column_oriented=True,
+                settings={
+                    "max_query_size": max(
+                        262144,
+                        sum(len(name.encode()) * 2 + 4 for name in columns) + 4096,
+                    ),
+                    "async_insert": 0,
+                },
             )
-        for attempt in range(_DELTA_IO_ATTEMPTS):
-            try:
-                self._retry_io(
-                    lambda: write_deltalake(
-                        snapshot if snapshot is not None else values,
-                        pa.table(columns),
-                        mode="append" if snapshot is not None else "error",
-                        schema_mode="merge",
-                        # A losing creator would rebase its create onto v1 and
-                        # replace the winner's schema, so only appends retry.
-                        commit_properties=(
-                            None
-                            if snapshot is not None
-                            else CommitProperties(max_commit_retries=0)
-                        ),
-                    )
-                )
-                return
-            except (DeltaError, FileNotFoundError) as error:
-                missing_log = (
-                    isinstance(error, FileNotFoundError)
-                    and re.search(
-                        re.escape(str(values / "_delta_log")) + r"/[0-9]{20}\.json",
-                        str(error),
-                    )
-                    is not None
-                )
-                if (
-                    attempt + 1 == _DELTA_IO_ATTEMPTS
-                    or (isinstance(error, FileNotFoundError) and not missing_log)
-                    or (
-                        snapshot is not None
-                        and not isinstance(error, CommitFailedError)
-                        and not missing_log
-                    )
-                ):
-                    raise
-                # Refresh after a conflict or a stale view of expired Delta logs.
-                # A lost creation retries as an append under the same rule.
-                try:
-                    snapshot = self._retry_io(lambda: DeltaTable(values))
-                except TableNotFoundError:
-                    raise error
-                schema = pa.schema(self._retry_io(snapshot.schema).to_arrow())
-                if any(
-                    name not in schema.names or schema.field(name).type != column.type
-                    for name, column in columns.items()
-                ):
-                    raise
-                sleep(_DELTA_IO_RETRY_SECONDS * 2**attempt)
-
-    @staticmethod
-    def _lub(left: pa.DataType, right: pa.DataType) -> pa.DataType:
-        """Find a scalar common type; this never changes a stored column type."""
-        if pa.types.is_null(left):
-            left = right
-        if pa.types.is_null(right):
-            right = left
-        if pa.types.is_string(left) or pa.types.is_string(right):
-            return pa.string()
-        if all(
-            pa.types.is_integer(t) or pa.types.is_floating(t) for t in (left, right)
-        ):
-            return (
-                pa.float64()
-                if any(pa.types.is_floating(t) for t in (left, right))
-                else pa.int64()
-            )
-        if left == right:
-            return left
-        raise TypeError(f"no common scalar type for {left} and {right}")
 
 
 class RecordStore(ObjectStore):

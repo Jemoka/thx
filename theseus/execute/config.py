@@ -29,6 +29,7 @@ class ClusterConfig:
     checkpoints: str | None = None
     results: str | None = None
     objects: str | None = None
+    metadata: str | None = None
     status: str | None = None
     share: str | None = None
     mount: str | None = None

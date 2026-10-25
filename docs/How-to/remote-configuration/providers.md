@@ -100,7 +100,8 @@ location must be inside its mounted PVC.
 | `data` | `<root>/data` | Override the cluster's dataset directory. |
 | `checkpoints` | `<root>/checkpoints` | Override the cluster's checkpoint-directory property. Object-store checkpoints can instead live as blobs under `objects`; changing this does not relocate existing blobs. |
 | `results` | `<root>/results` | Override the cluster's results directory. |
-| `objects` | `<root>/objects` | Object-store directory containing scalar metadata and blobs, including saved checkpoint configuration. Keep it accessible wherever you query or restore runs. |
+| `objects` | `<root>/objects` | Blob directory tree, including saved checkpoint configuration. Keep it accessible wherever you save or restore runs. |
+| `metadata` | `~/.thx.v2.chdb` | ClickHouse HTTP(S) connection string or persistent chDB directory on the worker. Use a server for concurrent processes. See [Metadata Store](metadata-store.md). |
 | `status` | `<root>/status` | Override the cluster's status directory. |
 | `share` | `<work>/.dispatch` | Base directory where the provider publishes dispatch files. For Volcano, `pvc_codedrop_path` can override it. |
 | `mount` | `null` | JuiceFS metadata URL. Omit it when storage is already provided without a bootstrap-managed JuiceFS mount. |

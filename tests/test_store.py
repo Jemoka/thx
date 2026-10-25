@@ -1,14 +1,10 @@
-import errno
+"""Public object/record/query semantics against persistent ClickHouse tables."""
 from pathlib import Path
-from shutil import copytree
-from time import monotonic, sleep
+from shutil import copyfile, copytree
 from typing import Any, cast
-from unittest.mock import Mock
 
 import jax
 import numpy as np
-from deltalake import DeltaTable
-from deltalake.exceptions import TableNotFoundError
 import pytest
 
 import theseus.store as store_module
@@ -17,32 +13,29 @@ from theseus.base.hardware import HardwareResult, local
 from theseus.store import ObjectReader, ObjectStore, RecordStore
 
 
+@pytest.fixture(autouse=True)
+def metadata_home(tmp_path, monkeypatch):
+    # Keep tests out of the user's real metadata directory and close every handle.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    readers = []
+    initialize = ObjectReader.__init__
+
+    def track(self, *args, **kwargs):
+        initialize(self, *args, **kwargs)
+        readers.append(self)
+
+    monkeypatch.setattr(ObjectReader, "__init__", track)
+    yield
+    for reader in reversed(readers):
+        try:
+            reader.close()
+        except RuntimeError:
+            pass
+
+
 @pytest.fixture
 def hardware(tmp_path: Path) -> HardwareResult:
     return local(str(tmp_path), "-")
-
-
-def wait_for_parts(store: ObjectStore, count: int = 1) -> list[Path]:
-    deadline = monotonic() + 10.0
-    parts: list[Path] = []
-    while monotonic() < deadline:
-        try:
-            parts = [Path(p) for p in DeltaTable(store.values()).file_uris()]
-        except TableNotFoundError:
-            pass
-        if len(parts) >= count:
-            return parts
-        store._raise_writer_error()
-        sleep(0.01)
-    assert len(parts) >= count
-    return parts
-
-
-def read_rows(store: ObjectStore) -> list[dict[str, Any]]:
-    try:
-        return DeltaTable(store.values()).to_pyarrow_table().to_pylist()
-    except TableNotFoundError:
-        return []
 
 
 def test_local_constructs_store_without_an_execution_spec(tmp_path: Path) -> None:
@@ -50,22 +43,6 @@ def test_local_constructs_store_without_an_execution_spec(tmp_path: Path) -> Non
 
     assert store.root() == tmp_path / "objects"
     store.close()
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        FileExistsError(errno.EEXIST, "exists"),
-        TimeoutError(errno.ETIMEDOUT, "timed out"),
-    ],
-)
-def test_io_retry_preserves_conflicts_and_bounds_failures(monkeypatch, error):
-    monkeypatch.setattr(store_module, "_DELTA_IO_RETRY_SECONDS", 0)
-    operation = Mock(side_effect=error)
-    with pytest.raises(type(error)):
-        ObjectStore._retry_io(operation)
-    expected = store_module._DELTA_IO_ATTEMPTS if isinstance(error, TimeoutError) else 1
-    assert operation.call_count == expected
 
 
 def test_wide_selection_preserves_sparse_merge_and_query_semantics(
@@ -85,6 +62,7 @@ def test_wide_selection_preserves_sparse_merge_and_query_semantics(
     monkeypatch.setattr(jax, "process_index", lambda: 1)
     store.value(first, {"loss": 99.0, "worker_only": 7})
     store.close()
+    store.start()
 
     rows = store.query().sort("loss", ascending=False).select(return_nodes=True)
     assert rows == [
@@ -110,6 +88,7 @@ def test_artifact_preserves_existing_node_specification(hardware: HardwareResult
     # Time-travel queries identify a node without carrying its parent field.
     store.artifact(Node.deserialize(node.serialize()), "probe", {}, {"value": 1})
     store.close()
+    store.start()
     assert path.read_bytes() == original
     assert store.parents(node) == [Node.deserialize(node.parent)]
 
@@ -123,6 +102,7 @@ def test_record_store_writes_marks_and_decodes_records(
 
     store.artifact(node, "validation", {"step": 1}, payload)
     store.close()
+    store.start()
 
     raw = store.query().node(node).select(raw=True)[0]
     blob = raw["blob"]
@@ -132,130 +112,6 @@ def test_record_store_writes_marks_and_decodes_records(
     assert store.get_record(node) == expected
     assert store.query().artifact().select() == [expected]
     assert store.query().artifact().select(return_nodes=True) == [(node, expected)]
-
-
-def test_value_batch_flush_and_lifecycle(
-    hardware: HardwareResult, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(store_module, "_VALUE_BATCH_SIZE", 2)
-    store = ObjectStore(hardware)
-    first_thread = store.thread
-    assert first_thread is not None and first_thread.is_alive()
-
-    store.start()
-    assert store.thread is first_thread
-
-    node = Node(name="train", nonce="abcdef")
-    loss = {"loss": 2.0}
-    store.value(node, loss)
-    store.value(node.next(), {"accuracy": 0.75})
-    wait_for_parts(store)
-    store.close()
-    store.close()
-
-    assert store.thread is None
-    assert loss == {"loss": 2.0}
-    rows = read_rows(store)
-    events = [row.pop("_x_event") for row in rows]
-    assert len(set(events)) == 2
-    write_indices = [row.pop("_x_write") for row in rows]
-    timestamps = [row.pop("_x_timestamp") for row in rows]
-    assert write_indices == sorted(write_indices)
-    assert timestamps == write_indices
-    assert rows == [
-        {
-            "_x_execution": None,
-            "_x_name": "train",
-            "_x_nonce": "abcdef",
-            "_x_parent": None,
-            "_x_prc_idx": 0,
-            "_x_seq": 0,
-            "_x_tag": None,
-            "accuracy": None,
-            "loss": 2.0,
-        },
-        {
-            "_x_execution": None,
-            "_x_name": "train",
-            "_x_nonce": "abcdef",
-            "_x_parent": node.serialize(),
-            "_x_prc_idx": 0,
-            "_x_seq": 1,
-            "_x_tag": None,
-            "accuracy": 0.75,
-            "loss": None,
-        },
-    ]
-
-    store.start()
-    assert store.thread is not None and store.thread is not first_thread
-    store.value(node, {"restarted": 1})
-    store.close()
-    assert len(DeltaTable(store.values()).file_uris()) == 1
-    assert store.query().node(node).select() == [{"loss": 2.0, "restarted": 1}]
-
-
-def test_value_time_flush(
-    hardware: HardwareResult, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(store_module, "_VALUE_FLUSH_SECONDS", 0.01)
-    store = ObjectStore(hardware)
-    sleep(0.03)
-
-    node = Node(name="timed")
-    store.value(node, {"value": 1})
-    wait_for_parts(store)
-    store.close()
-
-    assert store.query().node(node).select() == [{"value": 1}]
-
-
-def test_close_compacts_without_vacuuming_committed_parts(
-    hardware: HardwareResult, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(store_module, "_VALUE_BATCH_SIZE", 1)
-    store = ObjectStore(hardware)
-    node = Node(name="train", nonce="abcdef")
-    for _ in range(3):
-        store.value(node, {})
-        node = node.next()
-    parts = wait_for_parts(store, count=3)
-    before = {part: part.read_bytes() for part in parts}
-    version = DeltaTable(store.values()).version()
-    store.close()
-    compacted = DeltaTable(store.values())
-    assert len(compacted.file_uris()) == 1
-    assert compacted.version() > version
-    store.close()
-    assert DeltaTable(store.values()).version() == compacted.version()
-    assert {part: part.read_bytes() for part in parts} == before
-    assert store.query().all() == [
-        Node(name="train", nonce="abcdef", seq=0),
-        Node(name="train", nonce="abcdef", seq=1),
-        Node(name="train", nonce="abcdef", seq=2),
-    ]
-
-    assert len(read_rows(store)) == 3
-
-
-def test_writer_failure_is_reported_and_pending_part_is_removed(
-    hardware: HardwareResult, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    failure = OSError("disk full")
-    monkeypatch.setattr(store_module, "write_deltalake", Mock(side_effect=failure))
-    store = ObjectStore(hardware)
-    store.value(Node(name="broken"), {"value": 1})
-
-    with pytest.raises(RuntimeError, match="value writer failed") as raised:
-        store.close()
-
-    assert raised.value.__cause__ is failure
-    assert not list((store.root() / "values").glob(".*.tmp"))
-    with pytest.raises(RuntimeError, match="value writer failed"):
-        store.value(Node(name="later"), {"value": 2})
-    with pytest.raises(RuntimeError, match="value writer failed"):
-        store.start()
-    store.close()
 
 
 def test_non_scalar_values_are_rejected_before_the_writer_is_poisoned(
@@ -273,40 +129,8 @@ def test_non_scalar_values_are_rejected_before_the_writer_is_poisoned(
     assert store.error is None
     store.value(node, {"loss": cast(Any, np.float32(1.25))})
     store.close()
+    store.start()
     assert store.query().node(node).select() == [{"loss": 1.25}]
-
-
-def test_parallel_processes_publish_without_collisions(
-    hardware: HardwareResult, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    host = hardware.hosts[0]
-    multihost_hardware = hardware.model_copy(update={"hosts": [host, host]})
-    process_index = 0
-    monkeypatch.setattr(jax, "process_index", lambda: process_index)
-
-    first = ObjectStore(multihost_hardware)
-    node = Node(name="train", nonce="abcdef", seq=3)
-    first.value(node, {"first": 1.0, "shared": 0.0})
-
-    process_index = 1
-    second = ObjectStore(multihost_hardware)
-    second.value(node, {"second": 2.0, "shared": 1.0})
-    first.close()
-
-    second.close()
-    parts = DeltaTable(first.values()).file_uris()
-    assert len(parts) == 1
-    assert {row["_x_prc_idx"] for row in read_rows(first)} == {0, 1}
-
-    process_index = 0
-    assert first.query().node(node).select() == [
-        {"first": 1.0, "second": 2.0, "shared": 0.0}
-    ]
-    assert first.query().node(node.serialize()).select(return_nodes=True) == [
-        (node, {"first": 1.0, "second": 2.0, "shared": 0.0})
-    ]
-    assert first.query().where("shared", "=", 0.0).all() == [node]
-    assert first.query().where("shared", "=", 1.0).all() == []
 
 
 def test_nodes_and_parents_are_distinct_exact_and_sorted(
@@ -329,6 +153,7 @@ def test_nodes_and_parents_are_distinct_exact_and_sorted(
     store.value(unparented, {"solo": 3})
     store.value(unparented, {"duplicate": 4})
     store.close()
+    store.start()
 
     assert store.query().all() == [
         Node(name=child.name, nonce=child.nonce, seq=child.seq),
@@ -352,6 +177,7 @@ def test_object_reader_shares_store_queries_without_starting_a_writer(
     store.close()
 
     reader = ObjectReader.local(tmp_path)
+    reader.start()
 
     assert isinstance(store, ObjectReader)
     assert reader.query().node(child).select() == [{"loss": 1.0}]
@@ -379,6 +205,7 @@ def test_query_builder_folds_filters_and_sorts_nodes(
     store.value(nodes[1], {"_x_checkpoint": True, "_x_job": "tests/train"})
     store.value(nodes[2], {"_x_checkpoint": True, "_x_job": "tests/evaluate"})
     store.close()
+    store.start()
 
     assert store.query().has("logs/loss").where("eval/score", ">", 0.5).all() == [
         nodes[1],
@@ -475,11 +302,11 @@ def test_query_size_limit_applies_to_all_reader_paths(
     node = Node(name="child", nonce="bbbbbb", parent=parent.serialize())
     store.value(node, {"_x_finished": True, "score": 1.0})
     store.close()
+    store.start()
     source, columns = store._snapshot()
     # Exercise the parser limit without creating thousands of physical files.
     source = f"(SELECT * FROM {source} WHERE notEmpty('{'x' * 300000}'))"
     monkeypatch.setattr(store, "_snapshot", lambda: (source, columns))
-    store_module.chdb.query("SET max_query_size = 262144")
     if operation == "finished":
         assert store.query().execution("large-query").tag("train").finished().all() == [
             node.model_copy(update={"parent": None})
@@ -506,6 +333,7 @@ def test_query_discovers_tagged_execution_state(hardware: HardwareResult) -> Non
     unrelated = ObjectStore(hardware, "execution-b", "pretrain")
     unrelated.value(Node(name="tests.chain.run", nonce="cccccc"), {})
     unrelated.close()
+    complete.start()
 
     assert complete.query().execution("execution-a").tag(
         "pretrain"
@@ -546,6 +374,7 @@ def test_query_folds_chunks_repaths_blobs_and_matches_serialized_node(
         {"logs/loss": 2.0, "shared": 1.0, "_x_job": "tests/train"},
     )
     store.close()
+    store.start()
 
     store.start()
     store.value(node, {"eval/score": 0.75, "shared": 2.0})
@@ -554,6 +383,7 @@ def test_query_folds_chunks_repaths_blobs_and_matches_serialized_node(
     with store.blob(node) as blob:
         (blob / "state").write_text("checkpoint")
     store.close()
+    store.start()
 
     assert Node.model_validate_json((blob / "nodespec.json").read_text()) == node
     expected = {
@@ -574,13 +404,16 @@ def test_query_folds_chunks_repaths_blobs_and_matches_serialized_node(
     )
     assert store.parents(next_node) == [node]
 
+    store.close()
     relocated_root = tmp_path / "relocated"
-    relocated_root.mkdir()
-    relocated = ObjectStore(local(str(relocated_root), "-"))
-    relocated.close()
-    copytree(store.root(), relocated.root(), dirs_exist_ok=True)
+    copytree(store.root(), relocated_root / "objects")
+    copyfile(tmp_path / ".id", relocated_root / ".id")
+    # Metadata location is explicit and independent of the blob root.
+    relocated = ObjectReader.local(relocated_root, metadata=store._metadata)
+    relocated.start()
     expected["blob"] = relocated.root() / "blobs" / node.serialize()
     assert relocated.query().node(node).select() == [expected]
+
 
 
 def test_blob_failure_is_not_finalized(hardware: HardwareResult) -> None:
@@ -592,6 +425,7 @@ def test_blob_failure_is_not_finalized(hardware: HardwareResult) -> None:
             (blob / "partial").write_text("partial")
             raise LookupError("producer failed")
     store.close()
+    store.start()
 
     assert blob.exists()
     assert not (blob / "nodespec.json").exists()
@@ -612,6 +446,7 @@ def test_non_primary_blob_records_metadata_without_nodespec(
     with store.blob(node, {"kind": "checkpoint"}) as blob:
         (blob / "shard-1").write_text("data")
     store.close()
+    store.start()
 
     assert not (blob / "nodespec.json").exists()
     assert store.query().node(node).select() == [{"blob": blob, "kind": "checkpoint"}]
@@ -633,5 +468,6 @@ def test_live_node_ticks_do_not_relabel_queued_writes(hardware, monkeypatch):
     assert queued[0] == original
     assert queued[0] is not node
     store.close()
+    store.start()
     assert store.query().node(original).select()[0]["loss"] == 1.0
     assert store.query().node(node).select() == []

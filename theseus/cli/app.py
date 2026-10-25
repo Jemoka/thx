@@ -14,7 +14,6 @@ from theseus.cli.configure import configure
 from theseus.cli.submit import submit
 from theseus.cli.run import run
 from theseus.cli.jobs import jobs
-from theseus.cli.cleanup import cleanup
 
 
 app = typer.Typer(name="theseus", no_args_is_help=True)
@@ -23,7 +22,6 @@ app.command()(configure)
 app.command()(submit)
 app.command()(run)
 app.command()(jobs)
-app.command()(cleanup)
 
 
 @app.callback()

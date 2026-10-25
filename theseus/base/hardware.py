@@ -30,6 +30,9 @@ class Cluster(BaseModel):
     results: Optional[str] = None  # results directory (defaults to {root}/results)
     status: Optional[str] = None  # status directory (defaults to {root}/status)
     objects: Optional[str] = None  # object store (defaults to {root}/objects)
+    metadata: Optional[str] = (
+        None  # chDB path or ClickHouse DSN; defaults to ~/.thx.v2.chdb
+    )
 
     # These launch settings travel in DispatchSpec so a remote bootstrap never
     # needs to consult the dispatching machine's local cluster inventory.

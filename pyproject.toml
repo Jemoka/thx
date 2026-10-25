@@ -26,7 +26,6 @@ dependencies = [
     "flatbuffers>=25.12.19",
     "pyarrow>=23.0.1",
     "chdb>=4.3.0",
-    "deltalake>=1.6.3",
     "typer>=0.24.1",
     "nicegui>=3.16.0,<4",
     "pygwalker>=0.5.0.1",
@@ -34,6 +33,7 @@ dependencies = [
     "comet-ml>=3.58.6",
     "bottle>=0.13.4",
     "cheroot>=11.1.2",
+    "clickhouse-connect>=1.11.0",
 ]
 
 
@@ -42,6 +42,7 @@ theseus = "theseus.cli.app:app"
 
 [project.optional-dependencies]
 # Keep extras and dependency groups aligned manually.
+migrate = ["deltalake>=1.6.3"]
 fever = ["wikipedia>=1.4.0"]
 huggingface = [
     "tokenizers>=0.22.2",
@@ -86,6 +87,7 @@ docs = [
     "pymdown-extensions>=10.15",
 ]
 all = [
+    "deltalake>=1.6.3",
     "tokenizers>=0.22.2",
     "transformers>=5.1.0",
     "accelerate>=1.13.0",
@@ -106,6 +108,8 @@ all = [
 ]
 
 [dependency-groups]
+migrate = ["deltalake>=1.6.3"]
+
 # job-specific dependencies
 fever = [
     "wikipedia>=1.4.0",
@@ -168,6 +172,7 @@ docs = [
 
 # utilities / aliases
 all = [
+    {include-group = "migrate"},
     {include-group = "dev"},
     {include-group = "docs"},
     {include-group = "huggingface"},

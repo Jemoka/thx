@@ -76,6 +76,7 @@ class SSHProvider(Provider):
             checkpoints=configured.checkpoints,
             results=configured.results,
             objects=configured.objects,
+            metadata=configured.metadata,
             status=configured.status,
             mount=configured.mount,
             cache_size=configured.cache_size,

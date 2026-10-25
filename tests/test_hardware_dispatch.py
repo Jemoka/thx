@@ -2,11 +2,13 @@
 
 import pytest
 from omegaconf import OmegaConf
+from types import SimpleNamespace
 
 from theseus.base.hardware import HardwareResult
 from theseus.execute.config import ClusterConfig, DispatchConfig
 from theseus.execute.combobulator import Combobulation
-from theseus.execute.provider import SSHConfig, SSHProvider
+from theseus.execute.dispatch import DispatchSpec
+from theseus.execute.provider import SSHProvider, SlurmProvider, VolcanoProvider
 
 @pytest.fixture
 def make_hardware(tmp_path):
@@ -75,21 +77,39 @@ class TestClusterDerivedDirs:
 def test_cluster_config_fields_default_none():
     cfg = ClusterConfig(root="/a", work="/b")
     assert cfg.data is cfg.checkpoints is cfg.results is cfg.status is None
+    assert cfg.metadata is None
 
 
-def test_config_directories_survive_allocation_and_serialization(tmp_path):
+@pytest.mark.parametrize("provider", ["plain", "slurm", "volcano"])
+@pytest.mark.parametrize("metadata", [None, "chdb:///tmp/metadata.chdb", "https://metadata.example:8443/theseus"])
+def test_cluster_settings_survive_allocation_and_dispatch_replay(tmp_path, monkeypatch, provider, metadata):
+    from theseus.execute.provider.volcano.transport import Kubernetes
+
+    monkeypatch.setattr(
+        Kubernetes, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(ok=True, stdout='{"status": {"state": "Open"}}'),
+    )
     config_path = tmp_path / "dispatch.yaml"
     OmegaConf.save(OmegaConf.create({
-        "clusters": {"c1": {"root": "/r", "work": "/w", "data": "/d", "checkpoints": "/ck", "results": "/re", "status": "/st"}},
-        "hosts": {"host": {"type": "plain", "ssh": "login", "cluster": "c1"}},
+        "clusters": {"c1": {"root": "/r", "work": "/w", "data": "/d", "checkpoints": "/ck", "results": "/re", "status": "/st", "metadata": metadata}},
+        "hosts": {"host": {
+            "type": provider, "ssh": "login", "cluster": "c1",
+            "cpu_partitions": ["cpu"], "image": "theseus:test", "pvc_name": "workspace",
+        }},
     }), config_path)
     config = DispatchConfig.load(config_path)
+    assert config.clusters["c1"].metadata == metadata
     host = config.hosts["host"]
-    assert isinstance(host, SSHConfig)
-    hardware = SSHProvider("host", host).solve(Combobulation(steps=(), gpus=0), config)
-    restored = HardwareResult.model_validate_json(hardware.model_dump_json())
-    cluster = restored.hosts[0].cluster
+    provider_type = {"plain": SSHProvider, "slurm": SlurmProvider, "volcano": VolcanoProvider}[provider]
+    execution = Combobulation(steps=(), gpus=0)
+    hardware = provider_type("host", host).solve(execution, config)
+    assert hardware is not None
+    dispatch = DispatchSpec(name="metadata", group="test", project="test", job=execution, hardware=hardware)
+    restored = DispatchSpec.model_validate_json(dispatch.model_dump_json())
+    assert restored.hardware is not None
+    cluster = restored.hardware.hosts[0].cluster
     assert (cluster.data, cluster.checkpoints, cluster.results, cluster.status) == ("/d", "/ck", "/re", "/st")
+    assert cluster.metadata == metadata
 
 
 def test_hardware_roundtrip(make_hardware):

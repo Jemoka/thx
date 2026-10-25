@@ -4,7 +4,7 @@ Architecture and design documents for theseus internals.
 
 ## Documents
 
-- [Experiment DAG and Storage](dag.md) — node identities, ticking, branches, Parquet records, and ClickHouse queries.
+- [Experiment DAG and Storage](dag.md) — node identities, ticking, branches, scalar records, and ClickHouse queries.
 - [Available Chips](chips.md) — all supported chip string keys, memory, and theoretical compute peaks.
 - [Sharding Design](sharding.md) — execution policy, logical tensor axes, and parameter layouts.
 - [Config System](config.md) — how `field()`, `build()`, and `configuration()` turn annotated dataclasses into a unified OmegaConf schema.

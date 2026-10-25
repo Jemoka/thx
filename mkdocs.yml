@@ -82,11 +82,13 @@ nav:
     - Your own experiments: Tutorials/adding.md
     - What's Next: Tutorials/next.md
   - How-to Guides:
+    - Database Migration: How-to/database-migration.md
     - Analysis System: How-to/analysis.md
     - Evaluation System: How-to/evaluation.md
     - Remote Configuration:
       - Overview: How-to/remote-configuration/index.md
       - Provider Configuration: How-to/remote-configuration/providers.md
+      - Metadata Store: How-to/remote-configuration/metadata-store.md
       - JuiceFS Integration: How-to/remote-configuration/juicefs.md
     - Adding Things:
       - Overview: How-to/adding/index.md

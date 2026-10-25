@@ -8,7 +8,7 @@
 An experiment produces several kinds of things at different times: training
 metrics, checkpoints, evaluation scores, and perhaps a plot made days later.
 theseus gives them a common address: a **node** in an experiment's lineage.
-The node identifies the point being described. Parquet records describe that
+The node identifies the point being described. Scalar records describe that
 point, and blob files hold the larger objects associated with it.
 
 The DAG is this recorded lineage. It is distinct from the execution recipe
@@ -37,7 +37,7 @@ parents. `ObjectReader.parents(node)` reads the recorded direct parent edges.
 Several writes may share exactly the same identity. A loss report, an evaluation
 score, and a checkpoint marker can arrive in separate records and still describe
 one logical node. Likewise, several JAX processes may record that node. They do
-not create separate logical nodes merely by writing separate Parquet rows.
+not create separate logical nodes merely by writing separate table rows.
 
 ## Ticking creates a successor
 
@@ -122,39 +122,51 @@ references, or merge model parameters when it sees multiple parents.
 
 ## The physical layout
 
-With the default cluster directories, the object store looks like this:
+With the default cluster directories, files live under the root:
 
 ```text
-<root>/objects/
-    values/
-        part-<uuid>.parquet
-        part-<uuid>.parquet
-    blobs/
-        <serialized-node>/
-            nodespec.json
-            config.yaml
-            job.json
-            rng.npy
-            checkpoint/          # distributed checkpoint state
-            attention.msgpack    # an optional analysis artifact
+<root>/
+    .id                         # stable UUID identifying this root's table
+    objects/
+        blobs/
+            <serialized-node>/
+                nodespec.json
+                config.yaml
+                job.json
+                rng.npy
+                checkpoint/     # distributed checkpoint state
+                attention.msgpack
 ```
+
+Scalar metadata lives in a persistent ClickHouse `MergeTree` table named
+`values_<root-id>`. Each root gets its own table in the configured database,
+including when several roots use the same server. `ObjectStore` creates `.id`
+atomically if absent; `ObjectReader` requires it to exist. Preserve `.id` when
+moving a root: it is the link to its metadata.
+
+`Cluster.metadata` selects a persistent chDB directory or an HTTP(S) ClickHouse
+connection string. Omission selects `~/.thx.v2.chdb`, outside the object root.
+Embedded connections hold an exclusive filesystem lock until close and fail
+immediately if another connection owns the directory. Concurrent processes,
+including distributed jobs, need a ClickHouse server. In a server URL,
+`/theseus` selects the database; the root ID selects the table within it.
 
 The blob contents depend on what was saved; not every node has a blob or a
 checkpoint. `_x_blob` stores a relative path under `objects/blobs`, which readers
-resolve against their object-store root. Analysis PDFs/JSON also have their
-normal result files under the configured results directory.
+resolve against their object-store root. Sharing a metadata connection does not
+copy checkpoint files; each reader still needs access to the blobs. See
+[JuiceFS Integration](../How-to/remote-configuration/juicefs.md) for a shared-root deployment.
 
 `ObjectReader` only reads. `ObjectStore` adds the scalar writer and blob-directory
 interface. `RecordStore` adds lightweight MessagePack payloads for artifacts.
 Model checkpoints use `CheckpointedJob` and the Orbax-backed checkpoint manager,
 not the MessagePack artifact path.
 
-This separation also allows a reader to use a local mirror of Parquet parts
-while resolving blob paths against the original object store. Sharing or
-mirroring metadata does not implicitly copy checkpoint contents. See
-[JuiceFS Integration](../How-to/remote-configuration/juicefs.md) for a shared-root deployment.
+Legacy Delta metadata under `objects/values` needs an explicit
+[database migration](../How-to/database-migration.md). The store does not read
+that directory or migrate it automatically.
 
-## Publishing Parquet parts
+## Publishing scalar records
 
 A call to `value(node, fields)` copies scalar fields into a queue and adds the
 node identity, parent, process index, execution/tag information, and write order.
@@ -163,35 +175,28 @@ in checkpoints or artifacts rather than scalar columns.
 
 Each store has a background writer. It batches up to 4,096 queued rows or flushes
 on a 30-second deadline. Closing the store drains the queue. Each batch's schema
-is the union of its keys, with nulls where an individual row lacks a field; later
-parts can introduce new metric columns.
+is the union of its keys, with nulls where an individual row lacks a field.
+The writer adds new nullable columns with `ADD COLUMN IF NOT EXISTS`, validates
+their types, and inserts scalar batches. Incompatible column types fail.
 
-The writer claims a unique hidden temporary filename, writes a complete Parquet
-table, then renames it to `part-<uuid>.parquet`. Readers query the final
-`*.parquet` files, so an unfinished temporary file is not queryable. A successful
-queue operation is therefore not an immediate durable write or a guarantee that
-a concurrent reader can already see it.
+A successful queue operation is not an immediate durable write or a guarantee
+that a concurrent reader can already see it. A crash can lose queued records.
+The writer tries a batch up to three times for recognized transient filesystem
+or transport errors, waiting 0.25 then 0.5 seconds. Other errors fail immediately;
+exhausted retries surface on later writes or close. Retried batches preserve their
+event IDs and write order. If an insert succeeded but its acknowledgement was
+lost, physical rows can repeat; logical queries still fold the same events.
+Remote read queries also use the client's bounded retry support (two retries);
+embedded reads do not. ClickHouse manages its own storage parts and merges. Closing does not run a
+Theseus compaction pass, and there is no cleanup command.
 
-Closing also compacts parts owned by that store instance. It unifies their
-schemas and copies the rows into a replacement part before deleting the source
-parts. It does not rewrite another writer's parts or fold logical nodes during
-compaction. Interruption after publication can leave duplicate rows; deleting
-inputs only after publication avoids removing the only copy first.
+Metadata insertion and blob saving remain separate operations. They are not a
+single transaction covering a checkpoint and its scalar markers.
 
-This is file publication, not a database transaction covering every part and
-blob. A crash can lose queued records. Writer failures are surfaced on later
-writes or close; the current retry loop covers temporary-file claim permission
-errors with waits of 1, 2, 4, and 8 seconds. It does not make permanent permission
-failures harmless or retry every storage operation.
+## ClickHouse stores and queries the rows
 
-## ClickHouse is the query engine
-
-theseus calls embedded ClickHouse through `chdb` to query the Parquet files and
-return Arrow tables. This storage path does not require a separate ClickHouse
-server or insert rows into a server-managed table. The durable scalar data is
-in the Parquet directory.
-
-Queries infer a union schema across parts and group by
+Both embedded chDB and remote ClickHouse query the root's persistent table and
+return Arrow tables. Queries read its declared schema and group by
 `(_x_name, _x_nonce, _x_seq)`. For every requested field, an `argMaxIf` aggregate
 chooses the highest-priority non-null value. Nonconflicting fields accumulate;
 a later sparse record does not erase keys it omits.
@@ -209,8 +214,7 @@ wins the loss conflict; process one's accuracy still contributes because process
 zero did not supply that field.
 
 Priority is lexicographic: lower process index first, then the explicit write
-order when present, with file time, filename, and row position as fallbacks and
-tie-breakers. The writer makes its timestamp-derived order monotonic within the
+order, then the event ID as a tie-breaker. The writer makes its timestamp-derived order monotonic within the
 store instance. This is a defined conflict policy, not an average across replicas
 or a globally synchronized distributed clock. Distributed metric reduction must
 happen before logging if an average is what you need.

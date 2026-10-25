@@ -92,6 +92,14 @@ may be local to each compute node when `share` and `log` are set separately.
 For Volcano, paths refer to the container's filesystem; the publication
 location must be inside its mounted PVC.
 
+!!! warning "Multiple writers and multinode jobs"
+    Set `clusters.<name>.metadata` to a ClickHouse HTTP(S) connection string
+    before running concurrent jobs or multinode training against the same root.
+    The default embedded chDB database allows only one open connection; putting
+    it on a shared filesystem does not enable multiple writers. All workers
+    must reach the same metadata server. Follow [Metadata Store](metadata-store.md)
+    to configure it in `~/.theseus.yaml`.
+
 | Cluster field | Default | How to choose it |
 | --- | --- | --- |
 | `root` | Required | Persistent theseus root on the worker. Also the mount point if this cluster requests JuiceFS. |
